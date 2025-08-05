@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GRP3 Web App</title>
+</head>
+<body>
+    <h1>Machine Learning Web App</h1>
+    <form method="POST">
+        <input type="text" name="user_input" placeholder="Enter text">
+        <button type="submit">Submit</button>
+    </form>
+    {% if result %}
+        <h2>Result: {{ result }}</h2>
+    {% endif %}
+</body>
+</html>
