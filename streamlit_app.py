@@ -3,7 +3,8 @@ import pandas as pd
 import joblib
 import json
 import os
-from ui_model1 import render_model1_ui  # Import the reusable UI function
+from app.ui.ui_model1 import render_model1_ui
+
 
 MODELS_DIR = "app/models"
 

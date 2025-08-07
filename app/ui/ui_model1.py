@@ -4,7 +4,7 @@ import pandas as pd
 def render_model1_ui(model_input, model_name, mapping_data=None, debug=False):
     """
     Renders the UI for ANS Import & Export Storage Bin Prediction.
-    
+
     Parameters:
         model_input: Either a full model_package dict or a trained sklearn model.
         model_name: Name of the model (string).
@@ -34,14 +34,16 @@ def render_model1_ui(model_input, model_name, mapping_data=None, debug=False):
     # --- Determine if model_input is a package or just a model ---
     if isinstance(model_input, dict) and "model" in model_input:
         model = model_input["model"]
+        label_encoder = model_input.get("label_encoder", None)
         category_to_product_type = {
-            k.lower(): v for k, v in model_input["category_to_product_type"].items()
+            k.lower(): v for k, v in model_input.get("category_to_product_type", {}).items()
         }
         product_type_to_bin = {
-            k.lower(): v for k, v in model_input["product_type_to_bin"].items()
+            k.lower(): v for k, v in model_input.get("product_type_to_bin", {}).items()
         }
     else:
         model = model_input
+        label_encoder = None
         if mapping_data is None:
             st.error("Mapping data is required when using model-only format (.pkl + .json).")
             return
@@ -58,37 +60,44 @@ def render_model1_ui(model_input, model_name, mapping_data=None, debug=False):
 
     if st.button(f"Predict with {model_name}"):
         if description and weight_g > 0:
-            # Prepare input DataFrame
             input_df = pd.DataFrame([{"description": description, "weight_g": weight_g}])
 
-            # Step 1: Predict category
+            # Step 1: Predict encoded label
             try:
-                predicted_category = model.predict(input_df)[0]
+                predicted_encoded = model.predict(input_df)[0]
             except Exception as e:
                 st.error(f"Prediction failed: {e}")
                 return
 
-            # Step 2: Map to product type (case-insensitive)
-            product_type = category_to_product_type.get(str(predicted_category).lower())
+            # Step 2: Decode if label_encoder is available
+            if label_encoder:
+                try:
+                    predicted_category = label_encoder.inverse_transform([predicted_encoded])[0]
+                except Exception as e:
+                    st.error(f"Label decoding failed: {e}")
+                    return
+            else:
+                predicted_category = predicted_encoded  # assume model returns string labels
 
-            if not product_type:
-                st.warning(f"Could not map predicted category '{predicted_category}' to a product type.")
-                return
+            # Step 3: Map to product type
+            # If category_to_product_type exists and maps this prediction, use it — otherwise assume it's already the product_type
+            product_type = category_to_product_type.get(str(predicted_category).lower(), predicted_category)
 
-            # Step 3: Map to storage bin
+
+            # Step 4: Map to bin
             storage_bin = product_type_to_bin.get(str(product_type).lower(), "Unknown")
 
-            # --- Output results ---
+            # Output
             st.success(f"**Predicted Category:** {predicted_category}")
             st.info(f"**Product Type:** {product_type}")
             st.success(f"**Assigned Storage Bin:** {storage_bin}")
 
             if debug:
                 st.write("🔍 Debug Info:", {
+                    "Encoded Prediction": predicted_encoded,
                     "Predicted Category": predicted_category,
                     "Product Type": product_type,
                     "Storage Bin": storage_bin
                 })
-
         else:
             st.warning("Please enter both a description and a valid weight.")
