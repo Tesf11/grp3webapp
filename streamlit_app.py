@@ -85,6 +85,8 @@ This UI supports:
         st.info("No models detected yet. Place your files under `app/models/`.")
 
 # Detected model tabs (friend’s + any HF folders they want to use via the shared UI)
+TARGET_MODEL = "product_classifier"  # <-- set this to your pkl's base filename
+
 for tab_index, model_name in enumerate(models_info.keys(), start=1):
     with tabs[tab_index]:
         st.header(f"Model: {model_name}")
@@ -98,7 +100,6 @@ for tab_index, model_name in enumerate(models_info.keys(), start=1):
                 with open(meta["mapping_path"], "r", encoding="utf-8") as f:
                     mapping_data = json.load(f)
             model_for_ui = loaded_obj  # could be dict package or bare estimator
-
         else:  # Hugging Face (used via the shared UI pattern if desired)
             model_for_ui = HFAdapter(meta["model_path"], max_length=128)
             mapping_data = None
@@ -106,7 +107,7 @@ for tab_index, model_name in enumerate(models_info.keys(), start=1):
                 with open(meta["mapping_path"], "r", encoding="utf-8") as f:
                     mapping_data = json.load(f)
 
-        # Friend's two-subtab layout (Standard Prediction + placeholder for GenAI)
+        # Two subtabs per detected model
         sub_tabs = st.tabs(["🧠 Standard Prediction", "🤖 GenAI Model"])
 
         with sub_tabs[0]:
@@ -118,8 +119,61 @@ for tab_index, model_name in enumerate(models_info.keys(), start=1):
             )
 
         with sub_tabs[1]:
-            st.subheader(f"GenAI Model for {model_name}")
-            st.write("🚧 GenAI integration will be added here.")
+            if model_name == TARGET_MODEL:
+                st.subheader(f"GenAI Model for {model_name} (Gemini 2.5)")
+                st.caption("Generates possible products, industries, and features. Does not predict bins.")
+
+                API_GEN_URL = os.getenv("GEN_API_URL", "http://127.0.0.1:5000/api/genideas")
+
+                gen_desc = st.text_area("Enter sample description", height=120, key=f"gen_desc_{model_name}")
+                extra_tags = st.text_input("Optional extra tags (comma-separated)", key=f"gen_tags_{model_name}")
+                temp = st.slider("Creativity (temperature)", 0.0, 1.0, 0.7, 0.1, key=f"gen_temp_{model_name}")
+                model_choice = st.selectbox(
+                    "Model",
+                    ["gemini-2.5-flash", "gemini-2.5-pro"],
+                    index=0,
+                    key=f"gen_model_{model_name}"
+                )
+
+                if st.button("Generate ideas", key=f"gen_btn_{model_name}"):
+                    if not gen_desc.strip():
+                        st.warning("Please enter a description.")
+                    else:
+                        import requests, json
+                        payload = {
+                            "description": gen_desc.strip(),
+                            "tags": [t.strip() for t in extra_tags.split(",") if t.strip()],
+                            "temperature": temp,
+                            "model_name": model_choice,
+                        }
+                        try:
+                            r = requests.post(API_GEN_URL, json=payload, timeout=45)
+                            r.raise_for_status()
+                            data = r.json()
+                            if "error" in data:
+                                st.error(data["error"])
+                            else:
+                                ideas = data.get("ideas", {})
+                                st.markdown("#### Possible Products")
+                                st.write(ideas.get("possible_products", []))
+                                st.markdown("#### Industries")
+                                st.write(ideas.get("industries", []))
+                                st.markdown("#### Features")
+                                st.write(ideas.get("features", []))
+
+                                st.download_button(
+                                    "Download ideas (JSON)",
+                                    data=json.dumps(ideas, ensure_ascii=False, indent=2),
+                                    file_name="genai_ideas.json",
+                                    mime="application/json",
+                                )
+                        except requests.RequestException as e:
+                            st.error(f"Request failed: {e}")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+            else:
+                st.info("GenAI is available only under the Product Classifier tab.")
+
 
 
 # -----------------------------
