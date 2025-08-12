@@ -16,11 +16,9 @@ from app.hf_loader import HFAdapter
 import requests
 
 from app.ui.ui_sample_form import render_sample_form
+from app.ui.ui_image_ranker import render_image_ranker_ui
 
 from datetime import date
-
-
-
 
 
 # -----------------------------
@@ -68,8 +66,8 @@ def discover_models():
 st.set_page_config(page_title="ANS Import Export", layout="wide")
 models_info = discover_models()
 
-# Tabs: Home + one per detected model + YOUR product-category tab
-tab_labels = ["🏠 Home"] + list(models_info.keys()) + ["📦 Product Category Predictor"]
+# Tabs: Home + models + Image Ranker + Product Category
+tab_labels = ["🏠 Home"] + list(models_info.keys()) + ["🖼 Image Ranker", "📦 Product Category Predictor"]
 tabs = st.tabs(tab_labels)
 
 # Home
@@ -99,8 +97,8 @@ for tab_index, model_name in enumerate(models_info.keys(), start=1):
             if meta["mapping_path"]:
                 with open(meta["mapping_path"], "r", encoding="utf-8") as f:
                     mapping_data = json.load(f)
-            model_for_ui = loaded_obj  # could be dict package or bare estimator
-        else:  # Hugging Face (used via the shared UI pattern if desired)
+            model_for_ui = loaded_obj
+        else:
             model_for_ui = HFAdapter(meta["model_path"], max_length=128)
             mapping_data = None
             if meta["mapping_path"]:
@@ -175,9 +173,17 @@ for tab_index, model_name in enumerate(models_info.keys(), start=1):
                 st.info("GenAI is available only under the Product Classifier tab.")
 
 
+# -----------------------------
+# Image Ranker tab
+# -----------------------------
+with tabs[-2]:
+    st.header("🖼 Image Ranker")
+    st.caption("Upload and rank images using the trained Image Ranker model.")
+    render_image_ranker_ui()
+
 
 # -----------------------------
-# YOUR dedicated Product Category tab (uses your HFAdapter directly)
+# YOUR dedicated Product Category tab
 # -----------------------------
 with tabs[-1]:
     st.header("📦 Product Title → Category (via Flask backend)")
