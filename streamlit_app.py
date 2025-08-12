@@ -13,6 +13,15 @@ from app.ui.ui_model1 import render_model1_ui
 # YOUR adapter (you said HFAdapter is yours)
 from app.hf_loader import HFAdapter
 
+import requests
+
+from app.ui.ui_sample_form import render_sample_form
+
+from datetime import date
+
+
+
+
 
 # -----------------------------
 # Discover models in app/models
@@ -117,44 +126,10 @@ for tab_index, model_name in enumerate(models_info.keys(), start=1):
 # YOUR dedicated Product Category tab (uses your HFAdapter directly)
 # -----------------------------
 with tabs[-1]:
-    st.header("📦 Product Title → Category (Your HFAdapter)")
-    st.caption("Enter a product title; prediction uses the Hugging Face model via your HFAdapter.")
+    st.header("📦 Product Title → Category (via Flask backend)")
+    st.caption("Enter a product title; prediction is done by Flask backend's HF model.")
 
-    # Change this path if your HF model folder name is different
-    HF_MODEL_DIR = os.getenv("MODEL_DIR", "app/models/prodcat_model")
+    # Backend API URL
+    API_URL = os.getenv("API_URL", "http://127.0.0.1:5000/api/predict")
 
-    @st.cache_resource
-    def get_my_adapter(model_dir: str):
-        return HFAdapter(model_dir, max_length=128)
-
-    # Attempt to load once, show a clear error if folder missing
-    try:
-        my_model = get_my_adapter(HF_MODEL_DIR)
-        model_ready = True
-    except Exception as e:
-        model_ready = False
-        st.error(f"Failed to load HF model from `{HF_MODEL_DIR}`.\n{e}")
-
-    with st.form("my_prodcat_form", clear_on_submit=False):
-        title = st.text_input(
-            "Product title",
-            placeholder="e.g., Apple iPhone 14 Pro Max 256GB",
-            max_chars=256,
-        )
-        submitted = st.form_submit_button("Predict")
-
-    if submitted:
-        if not model_ready:
-            st.warning("Model not loaded. Please fix the model path/files and reload the app.")
-        else:
-            t = (title or "").strip()
-            if not t:
-                st.warning("Please enter a product title.")
-            else:
-                # Your HFAdapter.predict expects a DataFrame with a 'description' column
-                df = pd.DataFrame([{"description": t}])
-                try:
-                    category = my_model.predict(df)[0]
-                    st.success(f"**Predicted category:** {category}")
-                except Exception as e:
-                    st.error(f"Prediction failed: {e}")
+    render_sample_form(API_URL)
