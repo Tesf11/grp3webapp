@@ -8,16 +8,19 @@ def render_sample_form(api_url: str | None = None, title: str = "📝 New Sample
     """
     Streamlit form for creating a sample record.
     - Calls Flask backend to predict category from Product Title.
-    - Returns the submitted record as a dict (you can insert into DB later).
+    - On Save, POSTs the full record to /api/save/entries (same backend).
     """
-    API_URL = api_url or os.getenv("API_URL", "http://127.0.0.1:5000/api/predict")
+    PREDICT_URL = api_url or os.getenv("API_URL", "http://127.0.0.1:5000/api/predict")
+    SAVE_URL    = os.getenv("SAVE_API_URL", "http://127.0.0.1:5000/api/save/entries")
 
     st.header(title)
     st.caption("Fill the fields. Category is predicted from **Product Title** via the backend; you can edit it before saving.")
 
-    # choices (adjust as your team agrees)
     SAMPLE_TYPES = ["Incoming", "Outgoing"]
     STATUSES = ["Received", "Sent", "In transit", "Pending"]
+
+    if "sample_pred_category" not in st.session_state:
+        st.session_state.sample_pred_category = ""
 
     with st.form("sample_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
@@ -31,28 +34,27 @@ def render_sample_form(api_url: str | None = None, title: str = "📝 New Sample
             status = st.selectbox("Status", STATUSES, index=0)
             courier_cost = st.number_input("Courier Cost", min_value=0.0, step=0.5, format="%.2f")
 
-        # Product title drives category
-        product_title = st.text_input("Product Title (used to predict Category)",
-                                      placeholder="e.g., Disposable Linen (SIA sample)")
-
+        product_title = st.text_input(
+            "Product Title (used to predict Category)",
+            placeholder="e.g., Disposable Linen (SIA sample)"
+        )
         eta = st.date_input("ETA", value=date.today())
 
-        # Predict + allow edit
-        pred_btn = st.form_submit_button("Predict Category")
-        save_btn = st.form_submit_button("Save Entry")
+        c1, c2 = st.columns(2)
+        with c1:
+            pred_btn = st.form_submit_button("🔮 Predict Category")
+        with c2:
+            save_btn = st.form_submit_button("💾 Save Entry")
 
-        # state to hold last prediction
-        if "sample_pred_category" not in st.session_state:
-            st.session_state.sample_pred_category = ""
-
-        # When Predict pressed, call backend
+        # Predict
         if pred_btn:
             t = (product_title or "").strip()
             if not t:
                 st.warning("Enter a Product Title first.")
             else:
                 try:
-                    resp = requests.post(API_URL, json={"title": t}, timeout=15)
+                    with st.spinner("Predicting…"):
+                        resp = requests.post(PREDICT_URL, json={"title": t}, timeout=15)
                     if resp.status_code == 200:
                         st.session_state.sample_pred_category = resp.json().get("category", "")
                         st.success(f"Predicted Category: **{st.session_state.sample_pred_category}**")
@@ -61,17 +63,17 @@ def render_sample_form(api_url: str | None = None, title: str = "📝 New Sample
                 except requests.RequestException as e:
                     st.error(f"Failed to connect to backend: {e}")
 
-        # Let user edit/override category (whether predicted or not)
+        # Editable category (prefilled if predicted)
         category = st.text_input("Category", value=st.session_state.sample_pred_category, placeholder="Edit if needed")
 
-        # Save pressed → basic validation & return dict
-        record = None
+        # Save (ONLY runs when save_btn is pressed and validation passes)
         if save_btn:
             required = {
                 "Sample Type": sample_type,
                 "Company": company,
                 "Product Title": product_title,
                 "Status": status,
+                "Category": category,
             }
             missing = [k for k, v in required.items() if not str(v).strip()]
             if missing:
@@ -88,5 +90,15 @@ def render_sample_form(api_url: str | None = None, title: str = "📝 New Sample
                     "courier_cost": float(courier_cost or 0),
                     "eta": str(eta),
                 }
-                st.success("✅ Entry ready to save.")
-        return record
+                try:
+                    with st.spinner("Saving…"):
+                        r = requests.post(SAVE_URL, json=record, timeout=15)
+                    if r.status_code == 200:
+                        st.success(f"✅ Saved! ID = {r.json().get('id')}")
+                        # Optional: auto-return to entries page (if your entries page checks this flag)
+                        st.session_state.show_add_form = False
+                        st.session_state.redirect_to_entries = True
+                    else:
+                        st.error(f"Save failed ({r.status_code}): {r.text}")
+                except requests.RequestException as e:
+                    st.error(f"Failed to save: {e}")

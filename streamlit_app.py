@@ -15,7 +15,7 @@ from app.hf_loader import HFAdapter
 
 import requests
 
-from app.ui.ui_sample_form import render_sample_form
+from app.ui.ui_entries import render_entries_page
 from app.ui.ui_image_ranker import render_image_ranker_ui
 
 from datetime import date
@@ -186,10 +186,4 @@ with tabs[-2]:
 # YOUR dedicated Product Category tab
 # -----------------------------
 with tabs[-1]:
-    st.header("📦 Product Title → Category (via Flask backend)")
-    st.caption("Enter a product title; prediction is done by Flask backend's HF model.")
-
-    # Backend API URL
-    API_URL = os.getenv("API_URL", "http://127.0.0.1:5000/api/predict")
-
-    render_sample_form(API_URL)
+    render_entries_page()

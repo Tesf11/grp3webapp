@@ -21,4 +21,8 @@ def create_app():
     from .routes_genai import genai_bp
     app.register_blueprint(genai_bp)
 
+    # Create tables
+    from app.db import create_all
+    create_all()
+
     return app
