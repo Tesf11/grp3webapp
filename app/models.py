@@ -18,28 +18,20 @@ class Entry(Base):
     eta = Column(String(20))  # ISO date string
 
 class ImageRankBatch(Base):
-    """
-    One row per upload set (batch). Holds the best image summary and audit info.
-    """
     __tablename__ = "image_rank_batches"
 
     id = Column(Integer, primary_key=True)
-
-    # A human label for the upload (SKU, product name, etc.)
     item_name = Column(String(255), nullable=False)
 
-    # Best selection (summary at batch level)
     best_index = Column(Integer, nullable=False)
     best_name  = Column(String(255), nullable=False)
     best_score = Column(Float, nullable=False)
 
-    # Model info (audit)
     model_kind = Column(String(100))
     model_path = Column(String(500))
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Children
     items = relationship(
         "ImageRankItem",
         back_populates="batch",
@@ -48,18 +40,11 @@ class ImageRankBatch(Base):
         order_by="ImageRankItem.rank.asc()",
     )
 
-    def __repr__(self):
-        return f"<ImageRankBatch id={self.id} item_name={self.item_name} best={self.best_name} score={self.best_score:.3f}>"
-
-
+# ---- Image Ranker: items in a batch ----
 class ImageRankItem(Base):
-    """
-    One row per image within a batch. Stores filename, score, best flag, and rank (0 = best).
-    """
     __tablename__ = "image_rank_items"
 
     id = Column(Integer, primary_key=True)
-
     batch_id = Column(
         Integer,
         ForeignKey("image_rank_batches.id", ondelete="CASCADE"),
@@ -74,5 +59,18 @@ class ImageRankItem(Base):
 
     batch = relationship("ImageRankBatch", back_populates="items")
 
-    def __repr__(self):
-        return f"<ImageRankItem batch_id={self.batch_id} file_name={self.file_name} score={self.score:.3f} best={self.is_best}>"
+# ---- NEW: Alt text saved for a batch’s best image ----
+class ImageAltText(Base):
+    __tablename__ = "image_alt_texts"
+
+    id = Column(Integer, primary_key=True)
+    batch_id = Column(Integer, ForeignKey("image_rank_batches.id", ondelete="CASCADE"),
+                      index=True, nullable=False)
+    # optional link to the exact best item row
+    item_id  = Column(Integer, ForeignKey("image_rank_items.id", ondelete="CASCADE"),
+                      index=True, nullable=True)
+
+    alt_text = Column(Text, nullable=False)
+    provider = Column(String(50), default="gemini")
+    model    = Column(String(100), default="gemini-1.5-flash")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
