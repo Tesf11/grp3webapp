@@ -6,6 +6,61 @@ from typing import List, Dict
 import pandas as pd
 import numpy as np
 
+def render_label_card(plan: dict, code: str):
+    import re
+
+    headline = str(plan.get("headline", "")).strip()
+    subhead  = [str(x).strip() for x in (plan.get("subhead") or []) if str(x).strip()]
+    bullets  = [str(x).strip() for x in (plan.get("bullets") or []) if str(x).strip()]
+
+    # pull category + other context from the plan’s qr_payload if present
+    qp = plan.get("qr_payload") or {}
+    category     = str(qp.get("category", "")).strip()
+    sample_type  = str(qp.get("sample_type", "") or plan.get("sample_type", "")).strip()
+    status       = str(qp.get("status", "") or plan.get("status", "")).strip()
+
+    # --- 1) Filter out quantities/packs like “20 pcs”, “x10”, “500ml”, “2kg”, etc.
+    qty_re = re.compile(
+        r"(?i)\b(\d+(\.\d+)?)\s*(pcs?|pieces?|pack|packs?|ct|count|x|×|kg|g|mg|l|ml)\b"
+    )
+    clean_bullets = [b for b in bullets if not qty_re.search(b)]
+
+    # optional: keep at least 1 bullet if we removed all
+    if bullets and not clean_bullets:
+        clean_bullets = [bullets[0]]
+
+    # chips row
+    chips = []
+    if sample_type: chips.append(sample_type)
+    if status:      chips.append(status)
+
+    # build HTML
+    html = f"""
+    <div style="border:1px solid #ddd;border-radius:12px;padding:14px 16px;max-width:560px;">
+      <div style="font-weight:800;font-size:20px;line-height:1.1;margin-bottom:2px;">{headline}</div>
+      {f'<div style="font-size:12px;color:#666;margin:2px 0 8px 0;"><b>Category:</b> {category}</div>' if category else ''}
+
+      {''.join(f'<div style="font-size:14px;color:#444;margin:2px 0;">{s}</div>' for s in subhead)}
+
+      {"".join([
+        '<hr style="border:none;border-top:1px solid #eee;margin:8px 0;">',
+        '<ul style="margin:0 0 8px 18px;padding:0;">',
+        ''.join(f'<li style="margin:3px 0;font-size:14px;">{b}</li>' for b in clean_bullets),
+        '</ul>'
+      ]) if clean_bullets else ''}
+
+      {"".join([
+        '<div style="margin-top:6px;">',
+        ''.join(f'<span style="display:inline-block;background:#f2f2f2;border:1px solid #e5e5e5;border-radius:999px;padding:4px 10px;margin-right:6px;font-size:12px;color:#444;">{c}</span>' for c in chips),
+        '</div>'
+      ]) if chips else ''}
+
+      <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;margin-top:10px;">{code}</div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def _fetch_entries(limit: int = 100) -> List[Dict]:
     url = os.getenv("LIST_API_URL", "http://127.0.0.1:5000/api/list/entries")
     try:
@@ -154,6 +209,9 @@ def render_entries_page():
         # Action checkboxes
         col_cfg["_delete"] = st.column_config.CheckboxColumn("delete", help="Mark for deletion", width="small")
         col_cfg["_tag"] = st.column_config.CheckboxColumn("tag", help="Mark for tag generation", width="small")
+        # Label language selector (shown always)
+        lang = st.selectbox("Label language", ["en", "ms", "zh"], index=0, key="tag_lang_select")
+
 
         # Action bar
         ab1, ab2, ab3, _sp = st.columns([1.2, 1.2, 1.6, 3])
@@ -162,7 +220,8 @@ def render_entries_page():
         with ab2:
             delete_selected = st.button("🗑 Delete selected", use_container_width=True)
         with ab3:
-            gen_tags = st.button("🏷 Generate tags", use_container_width=True)
+            btn_generate_tags = st.button("🏷 Generate tags", use_container_width=True)  
+
 
         # Editable table
         edited = st.data_editor(
@@ -170,7 +229,7 @@ def render_entries_page():
             hide_index=True,
             use_container_width=True,
             column_config=col_cfg,
-            disabled=["id"],
+            disabled=["id"],  # keep checkboxes interactive
             key="entries_editor",
         )
 
@@ -245,16 +304,127 @@ def render_entries_page():
             except Exception as e:
                 st.error(f"Failed to delete: {e}")
 
-        # ==== Tag generation ====
-        if gen_tags:
-            try:
-                ids_for_tag = edited.loc[edited["_tag"] == True, "id"].tolist()
-                if not ids_for_tag:
-                    st.info("No rows marked for tag generation.")
-                else:
-                    st.info(f"Would generate tags for rows: {ids_for_tag}")
-            except Exception as e:
-                st.error(f"Failed to prepare tags: {e}")
+        # ==== Tag generation (multi-row) ====
+        if btn_generate_tags:
+            GEN_SMART_TAG_URL = os.getenv(
+                "GEN_SMART_TAG_URL",
+                "http://127.0.0.1:5000/api/generate_smart_tag"
+            )
+
+            # Small control for language (feel free to move this above the table)
+            #lang = st.selectbox("Label language", ["en", "ms", "zh"], index=0, key="tag_lang_select")
+
+            # rows marked for tag
+            ids_for_tag = edited.loc[edited["_tag"] == True, "id"].tolist()  # noqa: E712
+            if not ids_for_tag:
+                st.info("No rows marked for tag generation.")
+            else:
+                st.write(f"Generating tags for {len(ids_for_tag)} row(s)...")
+
+                def _row_to_payload(row: pd.Series) -> dict:
+                    d = row.to_dict()
+                    clean = {}
+                    for k, v in d.items():
+                        # remove action flags from payload
+                        if k in ("_delete", "_tag"):
+                            continue
+                        # normalize numpy / NaN / dates
+                        if isinstance(v, (np.generic,)):
+                            v = v.item()
+                        if isinstance(v, float) and (pd.isna(v)):
+                            v = None
+                        if hasattr(v, "isoformat"):
+                            v = v.isoformat()
+                        clean[k] = v
+                    return clean
+
+                edited_by_id = {int(rid): edited.loc[edited["id"] == rid].iloc[0] for rid in ids_for_tag}
+                prog = st.progress(0.0)
+                results = []
+                total = len(ids_for_tag)
+
+                for i, rid in enumerate(ids_for_tag, start=1):
+                    row_series = edited_by_id[int(rid)]
+                    payload = _row_to_payload(row_series)
+                    payload["lang"] = lang  # pass language to backend
+
+                    try:
+                        resp = requests.post(GEN_SMART_TAG_URL, json=payload, timeout=45)
+                        if resp.status_code == 200:
+                            results.append((rid, True, resp.json()))
+                        else:
+                            results.append((rid, False, f"HTTP {resp.status_code}: {resp.text}"))
+                    except requests.RequestException as e:
+                        results.append((rid, False, str(e)))
+                    finally:
+                        prog.progress(i / total)
+
+                st.divider()
+                st.subheader("🔖 Tag Previews")
+
+                # For optional bulk ZIP
+                bundle = []
+
+                any_ok = False
+                for rid, ok, data in results:
+                    with st.expander(f"Row ID {rid} — {'✅ OK' if ok else '❌ Failed'}", expanded=not ok):
+                        if ok:
+                            # Back-end fields (smart tag route)
+                            md_preview = (data.get("markdown_preview")
+                                        or data.get("label_markdown")
+                                        or "*No preview returned*").strip()
+                            zpl = (data.get("zpl") or "").strip()
+                            plain = (data.get("label_text") or "").strip()
+                            code = data.get("short_code", f"tag_{rid}")
+
+                            plan = data.get("plan") or {}
+                            render_label_card(plan, code)
+
+                            cdl1, cdl2 = st.columns(2)
+                            with cdl1:
+                                st.download_button(
+                                    label=f"⬇️ ZPL ({code}.zpl)",
+                                    data=(zpl + "\n").encode("utf-8"),
+                                    file_name=f"{code}.zpl",
+                                    mime="text/plain",
+                                    use_container_width=True,
+                                    disabled=(not zpl),
+                                )
+                            with cdl2:
+                                st.download_button(
+                                    label=f"⬇️ Plain text ({code}.txt)",
+                                    data=(plain + "\n").encode("utf-8") if plain else (md_preview + "\n").encode("utf-8"),
+                                    file_name=f"{code}.txt",
+                                    mime="text/plain",
+                                    use_container_width=True,
+                                )
+
+                            # collect for zip if ZPL present; fall back to txt
+                            file_bytes = (zpl + "\n").encode("utf-8") if zpl else (plain + "\n").encode("utf-8")
+                            ext = "zpl" if zpl else "txt"
+                            bundle.append((f"{code}.{ext}", file_bytes))
+                            any_ok = True
+                        else:
+                            st.error(str(data))
+
+                # Optional: bulk ZIP download of all generated tags
+                if any_ok and bundle:
+                    import io, zipfile
+                    zip_buf = io.BytesIO()
+                    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                        for fname, fbytes in bundle:
+                            zf.writestr(fname, fbytes)
+                    zip_buf.seek(0)
+                    st.download_button(
+                        label="📦 Download ALL tags (.zip)",
+                        data=zip_buf,
+                        file_name="tags_bundle.zip",
+                        mime="application/zip",
+                        use_container_width=False,
+                    )
+                elif not any_ok:
+                    st.warning("No tags were generated successfully.")
+
 
     else:
         st.info("No entries found with current filters.")
