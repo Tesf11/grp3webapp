@@ -8,34 +8,39 @@ import streamlit as st
 import joblib
 
 # Friend's UI for their sklearn models
-from app.ui.ui_model1 import render_model1_ui
+from app.ui.ui_StoragePredictor import render_model1_ui
 
 # YOUR adapter (you said HFAdapter is yours)
 from app.hf_loader import HFAdapter
 
-import requests
-
+# Extra UIs
 from app.ui.ui_entries import render_entries_page
 from app.ui.ui_image_ranker import render_image_ranker_ui
+# 🔗 GenAI sub-tab for Storage Predictor
+from app.ui.ui_StoragePredictorGenai import render_storage_predictor_genai  # <- make sure this exists
 
 from datetime import date
-
 
 # -----------------------------
 # Discover models in app/models
 # -----------------------------
 MODELS_DIR = Path("app/models")
 
+# Don’t auto-tab these feature folders (they already have their own dedicated pages)
+EXCLUDE_MODEL_KEYS = {"prodcat_model", "image_ranker", "storage_predictor"}
+
 def discover_models():
     """Return a dict of available models in app/models.
-    - sklearn: *.pkl (+ optional sidecar <name>.json)
+    - sklearn: *.pkl (+ optional sidecar <name>.json) in root or subfolders
     - huggingface: folders containing config.json + (model.safetensors|pytorch_model.bin)
     """
     info = {}
 
-    # 1) sklearn .pkl models
+    # 1) sklearn .pkl in root
     for p in MODELS_DIR.glob("*.pkl"):
         base = p.stem
+        if base in EXCLUDE_MODEL_KEYS:
+            continue
         mapping = MODELS_DIR / f"{base}.json"
         info[base] = {
             "type": "sklearn",
@@ -43,22 +48,70 @@ def discover_models():
             "mapping_path": str(mapping) if mapping.exists() else None,
         }
 
-    # 2) Hugging Face folders
+    # 2) folders: HF or sklearn-in-folder
     for d in MODELS_DIR.iterdir():
-        if d.is_dir():
-            has_cfg = (d / "config.json").exists()
-            has_weights = (d / "model.safetensors").exists() or (d / "pytorch_model.bin").exists()
-            if has_cfg and has_weights:
-                base = d.name
-                mapping = d / "mapping.json"  # optional if you keep extra mappings here
-                info[base] = {
-                    "type": "hf",
-                    "model_path": str(d),
-                    "mapping_path": str(mapping) if mapping.exists() else None,
-                }
+        if not d.is_dir():
+            continue
+        if d.name in EXCLUDE_MODEL_KEYS:
+            continue
+
+        # HF folder
+        has_cfg = (d / "config.json").exists()
+        has_weights = (d / "model.safetensors").exists() or (d / "pytorch_model.bin").exists()
+        if has_cfg and has_weights:
+            base = d.name
+            mapping = d / "mapping.json"
+            info[base] = {
+                "type": "hf",
+                "model_path": str(d),
+                "mapping_path": str(mapping) if mapping.exists() else None,
+            }
+            continue
+
+        # sklearn-in-folder
+        pkl_candidates = list(d.glob("*.pkl"))
+        if pkl_candidates:
+            base = d.name
+            pkl_path = pkl_candidates[0]
+            mapping = d / (pkl_path.stem + ".json")
+            if not mapping.exists():
+                json_candidates = list(d.glob("*.json"))
+                mapping = json_candidates[0] if json_candidates else None
+            info[base] = {
+                "type": "sklearn",
+                "model_path": str(pkl_path),
+                "mapping_path": str(mapping) if (mapping and mapping.exists()) else None,
+            }
 
     return info
 
+# -----------------------------
+# Helper: load Storage Predictor
+# -----------------------------
+def load_storage_predictor():
+    """Load model + mapping from app/models/storage_predictor/*"""
+    d = MODELS_DIR / "storage_predictor"
+    if not d.exists():
+        return None, None  # folder not present
+    # find pkl
+    pkl_candidates = list(d.glob("*.pkl"))
+    if not pkl_candidates:
+        return None, None
+    pkl_path = pkl_candidates[0]
+    model_obj = joblib.load(pkl_path)
+
+    # mapping: prefer <pklstem>.json, else any *.json (e.g., mapping_data.json)
+    mapping = d / (pkl_path.stem + ".json")
+    if not mapping.exists():
+        json_candidates = list(d.glob("*.json"))
+        mapping = json_candidates[0] if json_candidates else None
+
+    mapping_data = None
+    if mapping and mapping.exists():
+        with open(mapping, "r", encoding="utf-8") as f:
+            mapping_data = json.load(f)
+
+    return model_obj, mapping_data
 
 # -----------------------------
 # Streamlit App
@@ -66,27 +119,36 @@ def discover_models():
 st.set_page_config(page_title="ANS Import Export", layout="wide")
 models_info = discover_models()
 
-# Tabs: Home + models + Image Ranker + Product Category
-tab_labels = ["🏠 Home"] + list(models_info.keys()) + ["🖼 Image Ranker", "📦 Product Category Predictor"]
+# Build tabs:
+# Home + auto-detected ML models (EXCLUDING prodcat_model/image_ranker/storage_predictor)
+# + hard-coded Storage Predictor + Image Ranker + Product Category
+model_keys = list(models_info.keys())
+tab_labels = (
+    ["🏠 Home"]
+    + model_keys
+    + ["🗄️ Storage Predictor", "🖼 Image Ranker", "📦 Product Category Predictor"]
+)
 tabs = st.tabs(tab_labels)
 
+# -----------------------------
 # Home
+# -----------------------------
 with tabs[0]:
     st.title("ANS Import Export Web UI Interface")
     st.write("""
 This UI supports:
-- **scikit-learn `.pkl`** models (optionally with `<name>.json` mapping)
-- **Hugging Face** models exported as a folder (config/tokenizer/weights)
-- **Your** Product Title → Category predictor (HFAdapter) on its own tab
+- **scikit-learn** models (root or folders under `app/models/`)
+- **Hugging Face** folder models
+- Dedicated tabs for **Storage Predictor**, **Image Ranker**, and **Product Category**.
 """)
     if not models_info:
         st.info("No models detected yet. Place your files under `app/models/`.")
 
-# Detected model tabs (friend’s + any HF folders they want to use via the shared UI)
-TARGET_MODEL = "product_classifier"  # <-- set this to your pkl's base filename
-
-for tab_index, model_name in enumerate(models_info.keys(), start=1):
-    with tabs[tab_index]:
+# -----------------------------
+# Auto-detected model tabs
+# -----------------------------
+for idx, model_name in enumerate(model_keys, start=1):
+    with tabs[idx]:
         st.header(f"Model: {model_name}")
         meta = models_info[model_name]
 
@@ -107,83 +169,39 @@ for tab_index, model_name in enumerate(models_info.keys(), start=1):
 
         # Two subtabs per detected model
         sub_tabs = st.tabs(["🧠 Standard Prediction", "🤖 GenAI Model"])
-
         with sub_tabs[0]:
-            render_model1_ui(
-                model_for_ui,
-                model_name,
-                mapping_data=mapping_data,
-                debug=False
-            )
-
+            render_model1_ui(model_for_ui, model_name, mapping_data=mapping_data, debug=False)
         with sub_tabs[1]:
-            if model_name == TARGET_MODEL:
-                st.subheader(f"GenAI Model for {model_name} (Gemini 2.5)")
-                st.caption("Generates possible products, industries, and features. Does not predict bins.")
-
-                API_GEN_URL = os.getenv("GEN_API_URL", "http://127.0.0.1:5000/api/genideas")
-
-                gen_desc = st.text_area("Enter sample description", height=120, key=f"gen_desc_{model_name}")
-                extra_tags = st.text_input("Optional extra tags (comma-separated)", key=f"gen_tags_{model_name}")
-                temp = st.slider("Creativity (temperature)", 0.0, 1.0, 0.7, 0.1, key=f"gen_temp_{model_name}")
-                model_choice = st.selectbox(
-                    "Model",
-                    ["gemini-2.5-flash", "gemini-2.5-pro"],
-                    index=0,
-                    key=f"gen_model_{model_name}"
-                )
-
-                if st.button("Generate ideas", key=f"gen_btn_{model_name}"):
-                    if not gen_desc.strip():
-                        st.warning("Please enter a description.")
-                    else:
-                        import requests, json
-                        payload = {
-                            "description": gen_desc.strip(),
-                            "tags": [t.strip() for t in extra_tags.split(",") if t.strip()],
-                            "temperature": temp,
-                            "model_name": model_choice,
-                        }
-                        try:
-                            r = requests.post(API_GEN_URL, json=payload, timeout=45)
-                            r.raise_for_status()
-                            data = r.json()
-                            if "error" in data:
-                                st.error(data["error"])
-                            else:
-                                ideas = data.get("ideas", {})
-                                st.markdown("#### Possible Products")
-                                st.write(ideas.get("possible_products", []))
-                                st.markdown("#### Industries")
-                                st.write(ideas.get("industries", []))
-                                st.markdown("#### Features")
-                                st.write(ideas.get("features", []))
-
-                                st.download_button(
-                                    "Download ideas (JSON)",
-                                    data=json.dumps(ideas, ensure_ascii=False, indent=2),
-                                    file_name="genai_ideas.json",
-                                    mime="application/json",
-                                )
-                        except requests.RequestException as e:
-                            st.error(f"Request failed: {e}")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-            else:
-                st.info("GenAI is available only under the Product Classifier tab.")
-
+            st.info("GenAI is available only under the 🗄️ Storage Predictor tab.")
 
 # -----------------------------
-# Image Ranker tab
+# 🗄️ Storage Predictor (hard-coded)
+# -----------------------------
+storage_tab_index = 1 + len(model_keys)  # after Home + auto models
+with tabs[storage_tab_index]:
+    st.header("🗄️ Storage Predictor")
+    model_for_ui, mapping_data = load_storage_predictor()
+    if model_for_ui is None:
+        st.error("Folder `app/models/storage_predictor/` wasn’t found or has no `.pkl`.")
+    else:
+        sub_tabs = st.tabs(["🧠 Standard Prediction", "🧪 Generate Sample Ideas (Gemini)"])
+        with sub_tabs[0]:
+            # Use the shared UI with your model + mapping
+            render_model1_ui(model_for_ui, "storage_predictor", mapping_data=mapping_data, debug=False)
+        with sub_tabs[1]:
+            # Your GenAI Streamlit UI (lives in app/ui/ui_StoragePredictorGenai.py)
+            render_storage_predictor_genai()
+
+# -----------------------------
+# 🖼 Image Ranker tab (kept)
 # -----------------------------
 with tabs[-2]:
     st.header("🖼 Image Ranker")
     st.caption("Upload and rank images using the trained Image Ranker model.")
     render_image_ranker_ui()
 
-
 # -----------------------------
-# YOUR dedicated Product Category tab
+# 📦 Product Category tab (kept)
 # -----------------------------
 with tabs[-1]:
     render_entries_page()

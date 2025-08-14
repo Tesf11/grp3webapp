@@ -5,6 +5,7 @@ import streamlit as st
 from typing import List, Dict
 import pandas as pd
 import numpy as np
+from fpdf import FPDF  # <-- ADDED: We will use this for the PDF download button
 
 def render_label_card(plan: dict, code: str):
     import re
@@ -425,12 +426,86 @@ def render_entries_page():
                 elif not any_ok:
                     st.warning("No tags were generated successfully.")
 
+                # =========================
+                # ADDED: PDF download button
+                # (Placed beside an extra ZIP button without changing/removing existing ones)
+                # =========================
+                if any_ok and bundle:
+                    cz1, cz2 = st.columns([1, 1])
+                    with cz1:
+                        # A companion ZIP button so the PDF button sits "right beside" it
+                        try:
+                            st.download_button(
+                                label="📦 Download ALL tags (.zip)",
+                                data=zip_buf.getvalue(),
+                                file_name="tags_bundle.zip",
+                                mime="application/zip",
+                                use_container_width=True,
+                            )
+                        except Exception:
+                            # If zip_buf isn't available for some reason, rebuild quickly
+                            import io, zipfile
+                            _zip_buf2 = io.BytesIO()
+                            with zipfile.ZipFile(_zip_buf2, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                                for fname, fbytes in bundle:
+                                    zf.writestr(fname, fbytes)
+                            _zip_buf2.seek(0)
+                            st.download_button(
+                                label="📦 Download ALL tags (.zip)",
+                                data=_zip_buf2,
+                                file_name="tags_bundle.zip",
+                                mime="application/zip",
+                                use_container_width=True,
+                            )
+
+                    with cz2:
+                        # Build a single PDF containing all tag contents (one page per tag)
+                        try:
+                            pdf = FPDF()
+                            pdf.set_auto_page_break(auto=True, margin=15)
+
+                            def _latin1_safe(s: str) -> str:
+                                # Ensure content is safe for FPDF (latin-1)
+                                return s.encode("latin-1", "replace").decode("latin-1")
+
+                            for fname, fbytes in bundle:
+                                pdf.add_page()
+                                try:
+                                    pdf.set_font("Helvetica", size=12)
+                                except Exception:
+                                    pdf.set_font("Arial", size=12)
+                                pdf.multi_cell(0, 8, txt=_latin1_safe(fname))
+                                pdf.ln(4)
+
+                                try:
+                                    content = fbytes.decode("utf-8", errors="replace")
+                                except Exception:
+                                    content = fbytes.hex()
+
+                                try:
+                                    pdf.set_font("Courier", size=10)
+                                except Exception:
+                                    pdf.set_font("Helvetica", size=10)
+
+                                for line in content.splitlines():
+                                    # keep lines manageable for the page width
+                                    chunks = [line[i:i+120] for i in range(0, len(line), 120)] or [""]
+                                    for ch in chunks:
+                                        pdf.multi_cell(0, 5, txt=_latin1_safe(ch))
+                                pdf.ln(2)
+
+                            pdf_out = pdf.output(dest="S")
+                            pdf_bytes = pdf_out if isinstance(pdf_out, (bytes, bytearray)) else pdf_out.encode("latin-1", "replace")
+
+                            st.download_button(
+                                label="📄 Download ALL tags (PDF)",
+                                data=pdf_bytes,
+                                file_name="tags_bundle.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                            )
+                        except Exception as e:
+                            st.error(f"Failed to build PDF: {e}")
 
     else:
         st.info("No entries found with current filters.")
-
-
-
-
-
-

@@ -1,6 +1,6 @@
 import json
 from flask import Blueprint, request, jsonify
-from app.gen_model1 import generate_ideas
+from app.ui.ui_StoragePredictorGenai import generate_ideas
 
 genai_bp = Blueprint("genai", __name__)
 

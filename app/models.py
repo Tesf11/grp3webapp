@@ -74,3 +74,30 @@ class ImageAltText(Base):
     provider = Column(String(50), default="gemini")
     model    = Column(String(100), default="gemini-1.5-flash")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Prediction(Base):
+    __tablename__ = "predictions"
+    id = Column(Integer, primary_key=True)
+
+    # Inputs
+    description = Column(Text, nullable=False)
+    weight_g = Column(Float, nullable=False)
+
+    # Model outputs
+    predicted_product_type = Column(String(64), nullable=False)
+    storage_bin = Column(String(64), nullable=False)
+
+    # Optional metadata
+    model_name = Column(String(64))
+    model_version = Column(String(64))
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+    id = Column(Integer, primary_key=True)
+    prediction_id = Column(Integer, nullable=False)
+    correct_product_type = Column(String(64))     # optional corrected label
+    correct_storage_bin = Column(String(64))      # optional corrected bin
+    notes = Column(Text)                          # optional free text
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
