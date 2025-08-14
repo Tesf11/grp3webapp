@@ -55,3 +55,48 @@ def api_list_entries():
         rows = s.query(Entry).order_by(Entry.id.desc()).limit(limit).all()
         def ser(r): return {c.name: getattr(r, c.name) for c in r.__table__.columns}
         return jsonify([ser(r) for r in rows]), 200
+    
+# --- UPDATE (partial) ---
+@prodcat_api.put("/api/update/<int:row_id>")
+def api_update_entry(row_id: int):
+    """Partial update. Accepts JSON with any subset of columns.
+       UI may send 'type' for the 'category' DB column; we map it here.
+    """
+    payload = request.get_json(force=True, silent=True) or {}
+
+    # Map UI field 'type' -> DB field 'category'
+    if "type" in payload and "category" not in payload:
+        payload["category"] = payload.pop("type")
+
+    # Whitelist updatable fields from the model
+    # (don’t allow id or server-managed timestamps to be written)
+    allowed = {c.name for c in Entry.__table__.columns} - {"id", "created_at"}
+    updates = {k: v for k, v in payload.items() if k in allowed}
+
+    if not updates:
+        return jsonify({"error": "No valid fields to update."}), 400
+
+    with get_session() as s:
+        obj = s.get(Entry, row_id)
+        if not obj:
+            return jsonify({"error": f"id {row_id} not found"}), 404
+
+        for k, v in updates.items():
+            setattr(obj, k, v)
+        s.add(obj)           # optional; flushed on context exit
+        s.flush()            # ensure obj has latest values
+
+        return jsonify({"ok": True, "id": obj.id, "row": _serialize(obj)}), 200
+
+
+# --- DELETE ---
+@prodcat_api.delete("/api/delete/<int:row_id>")
+def api_delete_entry(row_id: int):
+    with get_session() as s:
+        obj = s.get(Entry, row_id)
+        if not obj:
+            return jsonify({"error": f"id {row_id} not found"}), 404
+        s.delete(obj)
+        # commit happens on context exit
+        return jsonify({"ok": True, "id": row_id}), 200
+
