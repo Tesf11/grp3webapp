@@ -101,3 +101,17 @@ class Feedback(Base):
     correct_storage_bin = Column(String(64))      # optional corrected bin
     notes = Column(Text)                          # optional free text
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+# ---- Disposal Predictor: saved predictions ----
+class DisposalPrediction(Base):
+    __tablename__ = "disposal_predictions"
+
+    id        = Column(Integer, primary_key=True)
+    file_name = Column(String(255))
+    label     = Column(String(128), nullable=False)
+    prob      = Column(Float,      nullable=False)
+    low_conf  = Column(Boolean,    nullable=False)
+    # store top-k as JSON string to avoid dialect issues
+    candidates_json = Column(Text)           # e.g. '[["aerosol_cans",0.91],["... ",0.07]]'
+    guidance  = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

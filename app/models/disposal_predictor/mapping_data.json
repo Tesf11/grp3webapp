@@ -1,0 +1,14 @@
+{
+  "model_type": "savedmodel",
+  "model_path": "tf_savedmodel",
+  "img_size": [
+    320,
+    320
+  ],
+  "threshold": 0.55,
+  "class_names": [
+    "aerosol_cans",
+    "plastic_detergent_bottles",
+    "plastic_trash_bags"
+  ]
+}

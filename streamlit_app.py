@@ -18,6 +18,7 @@ from app.ui.ui_entries import render_entries_page
 from app.ui.ui_image_ranker import render_image_ranker_ui
 # 🔗 GenAI sub-tab for Storage Predictor
 from app.ui.ui_StoragePredictorGenai import render_storage_predictor_genai  # <- make sure this exists
+from app.ui.ui_DisposalPredictor import render_disposal_predictor_ui
 
 from datetime import date
 
@@ -27,7 +28,7 @@ from datetime import date
 MODELS_DIR = Path("app/models")
 
 # Don’t auto-tab these feature folders (they already have their own dedicated pages)
-EXCLUDE_MODEL_KEYS = {"prodcat_model", "image_ranker", "storage_predictor"}
+EXCLUDE_MODEL_KEYS = {"prodcat_model", "image_ranker", "storage_predictor", "disposal_predictor"}
 
 def discover_models():
     """Return a dict of available models in app/models.
@@ -126,7 +127,7 @@ model_keys = list(models_info.keys())
 tab_labels = (
     ["🏠 Home"]
     + model_keys
-    + ["🗄️ Storage Predictor", "🖼 Image Ranker", "📦 Product Category Predictor"]
+    + ["🗄️ Storage Predictor", "🗑 Disposal Predictor", "🖼 Image Ranker", "📦 Product Category Predictor"]
 )
 tabs = st.tabs(tab_labels)
 
@@ -139,7 +140,7 @@ with tabs[0]:
 This UI supports:
 - **scikit-learn** models (root or folders under `app/models/`)
 - **Hugging Face** folder models
-- Dedicated tabs for **Storage Predictor**, **Image Ranker**, and **Product Category**.
+- Dedicated tabs for **Storage Predictor**, **Disposal Predictor**, **Image Ranker**, and **Product Category**.
 """)
     if not models_info:
         st.info("No models detected yet. Place your files under `app/models/`.")
@@ -191,6 +192,14 @@ with tabs[storage_tab_index]:
         with sub_tabs[1]:
             # Your GenAI Streamlit UI (lives in app/ui/ui_StoragePredictorGenai.py)
             render_storage_predictor_genai()
+
+# -----------------------------
+# 🗑 Disposal Predictor (new)
+# -----------------------------
+disposal_tab_index = 1 + len(model_keys) + 1  # immediately after Storage Predictor
+with tabs[disposal_tab_index]:
+    render_disposal_predictor_ui()
+
 
 # -----------------------------
 # 🖼 Image Ranker tab (kept)
