@@ -408,32 +408,12 @@ def render_entries_page():
                         else:
                             st.error(str(data))
 
-                # Optional: bulk ZIP download of all generated tags
-                if any_ok and bundle:
-                    import io, zipfile
-                    zip_buf = io.BytesIO()
-                    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                        for fname, fbytes in bundle:
-                            zf.writestr(fname, fbytes)
-                    zip_buf.seek(0)
-                    st.download_button(
-                        label="📦 Download ALL tags (.zip)",
-                        data=zip_buf,
-                        file_name="tags_bundle.zip",
-                        mime="application/zip",
-                        use_container_width=False,
-                    )
-                elif not any_ok:
-                    st.warning("No tags were generated successfully.")
-
                 # =========================
                 # ADDED: PDF download button
-                # (Placed beside an extra ZIP button without changing/removing existing ones)
                 # =========================
                 if any_ok and bundle:
                     cz1, cz2 = st.columns([1, 1])
                     with cz1:
-                        # A companion ZIP button so the PDF button sits "right beside" it
                         try:
                             st.download_button(
                                 label="📦 Download ALL tags (.zip)",
