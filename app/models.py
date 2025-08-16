@@ -115,3 +115,26 @@ class DisposalPrediction(Base):
     candidates_json = Column(Text)           # e.g. '[["aerosol_cans",0.91],["... ",0.07]]'
     guidance  = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+class GenAILog(Base):
+    __tablename__ = "genai_logs"
+    id = Column(Integer, primary_key=True)
+    ts = Column(DateTime(timezone=True), server_default=func.now())
+
+    model = Column(String(64), nullable=False)
+    prompt_type = Column(String(64))            # e.g., "ideas", "tagging", "summary"
+    prompt_chars = Column(Integer)              # len(prompt)
+    response_chars = Column(Integer)
+
+    input_tokens = Column(Integer)              # from response.usage_metadata
+    output_tokens = Column(Integer)
+    total_tokens = Column(Integer)
+
+    latency_ms = Column(Float)
+    status = Column(String(32), default="ok")   # ok | blocked | error
+    error_code = Column(String(64))
+    safety_blocked = Column(Boolean, default=False)
+
+    # optional: short samples for QA (do NOT store full PII)
+    prompt_sample = Column(Text)
+    response_sample = Column(Text)

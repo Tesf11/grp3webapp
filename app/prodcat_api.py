@@ -9,6 +9,9 @@ import google.generativeai as genai
 import json
 import re
 from datetime import datetime
+import time
+from app.models import GenAILog 
+from sqlalchemy import func
 
 
 load_dotenv()
@@ -17,7 +20,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Configure Gemini model
 genai.configure(api_key=GEMINI_API_KEY)
 def pick_gemini_model():
-    preferred = ["gemini-1.5-flash", "gemini-1.5-pro"]
+    preferred = ["gemini-1.5-flash", "gemini-2.5-flash"]
     gen_cfg = {"response_mime_type": "application/json"}  # nudge to return raw JSON
     available = list(genai.list_models())
     can_generate = {m.name for m in available if "generateContent" in getattr(m, "supported_generation_methods", [])}
@@ -43,6 +46,31 @@ hf_model = None
 
 def _serialize(obj):
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+
+def _safe_trim(s: str | None, n: int = 240) -> str:
+    if not s:
+        return ""
+    s = str(s).strip()
+    return (s[:n] + "…") if len(s) > n else s
+
+def _log_genai(session, *, model: str, prompt_type: str, prompt: str, resp_text: str | None,
+               usage, latency_ms: float, status: str = "ok",
+               error_code: str | None = None, safety_blocked: bool = False):
+    session.add(GenAILog(
+        model=model,
+        prompt_type=prompt_type,
+        prompt_chars=len(prompt or ""),
+        response_chars=len(resp_text or "") if resp_text else 0,
+        input_tokens=getattr(usage, "input_tokens", None) if usage else None,
+        output_tokens=getattr(usage, "output_tokens", None) if usage else None,
+        total_tokens=getattr(usage, "total_token_count", None) if usage else None,
+        latency_ms=float(latency_ms),
+        status=status,
+        error_code=error_code,
+        safety_blocked=bool(safety_blocked),
+        prompt_sample=_safe_trim(prompt, 200),
+        response_sample=_safe_trim(resp_text, 200) if resp_text else "",
+    ))
 
 @prodcat_api.record_once
 def load_model(setup_state):
@@ -265,8 +293,10 @@ def _compose_zpl(plan: dict, code: str, wide: bool = False):
 
 @prodcat_api.post("/api/generate_smart_tag")
 def api_generate_smart_tag():
+    if not USE_GENAI or gemini_model is None:
+        return jsonify({"error": "GenAI not configured"}), 503
+
     data = request.get_json(force=True, silent=True) or {}
-    # normalize UI -> DB field names
     if "type" in data and "category" not in data:
         data["category"] = data["type"]
 
@@ -276,7 +306,6 @@ def api_generate_smart_tag():
 
     lang = (data.get("lang") or "en").strip()
 
-    # Build prompt
     prompt = f"""
 You are designing a small warehouse sample label.
 Goal: make it scannable and legible on a 58–62mm thermal label.
@@ -295,13 +324,21 @@ tracking_number: {data.get('tracking_number','')}
 eta: {data.get('eta','')}
 contact_person: {data.get('contact_person','')}
 notes: {data.get('notes','')}
-"""
+""".strip()
 
-    # --- call LLM and parse JSON robustly ---
+    t0 = time.perf_counter()
+    raw = ""
     try:
         r = gemini_model.generate_content(prompt)
-        raw = (r.text or "").strip()
+        latency_ms = (time.perf_counter() - t0) * 1000.0
 
+        # Safety block detection (SDK-specific fields)
+        blocked = False
+        if getattr(r, "prompt_feedback", None):
+            pf = r.prompt_feedback
+            blocked = (getattr(pf, "block_reason", None) is not None)
+
+        raw = (r.text or "").strip()
         def extract_json(s: str) -> str:
             s = s.strip()
             if s.startswith("```"):
@@ -321,112 +358,156 @@ notes: {data.get('notes','')}
                 raise
             plan = json.loads(m.group(0))
 
+        # --- enrich/fallbacks (unchanged from your version) ---
+        plan = plan or {}
+        headline = _clip(plan.get("headline") or title, 30)
+        plan["headline"] = headline
+
+        subhead = plan.get("subhead") or []
+        if not isinstance(subhead, list):
+            subhead = [str(subhead)]
+        if not subhead:
+            comp = (data.get("company") or "").strip()
+            s1 = (data.get("sample_type") or "").strip()
+            stt = (data.get("status") or "").strip()
+            joiner = " · ".join([x for x in [comp, s1 or stt] if x])
+            if joiner:
+                subhead = [_clip(joiner, 28)]
+        plan["subhead"] = subhead[:2]
+
+        bullets = plan.get("bullets") or []
+        if not isinstance(bullets, list):
+            bullets = [str(bullets)]
+
+        def _maybe(s):
+            s = (s or "").strip()
+            return s if s else None
+
+        canon = []
+        if _maybe(data.get("sample_type")):
+            canon.append(_clip(f"{data['sample_type']} Sample", 26))
+        if _maybe(data.get("status")):
+            canon.append(_clip(data["status"], 26))
+        if _maybe(data.get("category")):
+            canon.append(_clip(data["category"], 26))
+        if _maybe(data.get("tracking_number")):
+            canon.append(_clip(f"Track: {data['tracking_number'][-6:]}", 26))
+        plan["bullets"] = canon[:4]
+
+        handling = plan.get("handling") or []
+        if not isinstance(handling, list):
+            handling = [str(handling)]
+        if not handling:
+            handling = ["Keep dry"]
+        plan["handling"] = [_clip(h, 18) for h in handling[:3]]
+
+        hazards = plan.get("hazards") or []
+        if not isinstance(hazards, list):
+            hazards = [str(hazards)]
+        plan["hazards"] = [_clip(h, 14) for h in hazards[:3]]
+
+        qp = plan.get("qr_payload", {}) or {}
+        qp.setdefault("product_title", data.get("product_title"))
+        qp.setdefault("company",        data.get("company"))
+        qp.setdefault("category",       data.get("category"))
+        qp.setdefault("tracking_number",data.get("tracking_number"))
+        qp.setdefault("eta",            data.get("eta"))
+        qp.setdefault("contact",        data.get("contact_person"))
+        plan["qr_payload"] = qp
+
+        code = _short_code(data)
+        if not plan.get("footer_code"):
+            plan["footer_code"] = code
+
+        zpl = _compose_zpl(plan, code)
+
+        # --- LOG SUCCESS/blocked ---
+        usage = getattr(r, "usage_metadata", None)
+        with get_session() as s:
+            _log_genai(
+                s,
+                model=GENAI_MODEL_NAME,
+                prompt_type="smart_tag",
+                prompt=prompt,
+                resp_text=raw,
+                usage=usage,
+                latency_ms=latency_ms,
+                status=("blocked" if blocked else "ok"),
+                safety_blocked=blocked,
+            )
+
+        if blocked:
+            return jsonify({"error": "Request blocked by safety filters"}), 403
+
+        # Markdown preview (unchanged)
+        headline = plan.get("headline") or title
+        subhead  = plan.get("subhead") or []
+        bullets  = plan.get("bullets") or []
+        badges   = (plan.get("handling") or [])[:2] + (plan.get("hazards") or [])[:2]
+        code     = plan.get("footer_code") or _short_code(data)
+
+        br = "  \n"
+        lines = [f"**{headline}**"]
+        for sh in subhead: lines.append(sh)
+        for b in bullets:  lines.append(f"• {b}")
+        if badges:         lines.append("_" + " · ".join(badges) + "_")
+        lines.append(f"`{code}`")
+        md_preview = br.join(lines)
+
+        return jsonify({
+            "ok": True,
+            "plan": plan,
+            "short_code": code,
+            "zpl": zpl,
+            "markdown_preview": md_preview
+        }), 200
+
     except Exception as e:
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+        with get_session() as s:
+            _log_genai(
+                s,
+                model=GENAI_MODEL_NAME,
+                prompt_type="smart_tag",
+                prompt=prompt,
+                resp_text=None,
+                usage=None,
+                latency_ms=latency_ms,
+                status="error",
+                error_code=type(e).__name__,
+            )
         return jsonify({"error": f"genai_parse_failed: {e}", "raw": (raw if 'raw' in locals() else "")}), 500
 
-    # --- enforce required keys + enrich if missing ---
-    plan = plan or {}
 
-    headline = _clip(plan.get("headline") or title, 30)
-    plan["headline"] = headline
+@prodcat_api.get("/api/metrics/genai")
+def api_metrics_genai():
+    """Lightweight aggregates for last N days (default 7)."""
+    days = int(request.args.get("days", 7))
+    with get_session() as s:
+        base = s.query(GenAILog).filter(GenAILog.ts >= func.datetime("now", f"-{days} days"))
 
-    subhead = plan.get("subhead") or []
-    if not isinstance(subhead, list):
-        subhead = [str(subhead)]
-    # fallback subhead if empty: "COMPANY · SAMPLE_TYPE" or "COMPANY · STATUS"
-    if not subhead:
-        comp = (data.get("company") or "").strip()
-        s1 = (data.get("sample_type") or "").strip()
-        stt = (data.get("status") or "").strip()
-        joiner = " · ".join([x for x in [comp, s1 or stt] if x])
-        if joiner:
-            subhead = [_clip(joiner, 28)]
-    plan["subhead"] = subhead[:2]
+        total   = base.count()
+        ok      = base.filter(GenAILog.status == "ok").count()
+        blocked = base.filter(GenAILog.status == "blocked").count()
+        errors  = base.filter(GenAILog.status == "error").count()
 
-    bullets = plan.get("bullets") or []
-    if not isinstance(bullets, list):
-        bullets = [str(bullets)]
+        avg_lat = s.query(func.avg(GenAILog.latency_ms)).filter(GenAILog.ts >= func.datetime("now", f"-{days} days")).scalar() or 0.0
 
-    # Construct fallbacks to ensure 2–4 bullets
-        # ---- Canonical, deterministic bullets (no LLM variability) ----
-    def _maybe(s):
-        s = (s or "").strip()
-        return s if s else None
+        # SQLite has no percentile_cont; compute p95 in Python if you want (front-end).
+        sum_in  = s.query(func.sum(GenAILog.input_tokens)).filter(GenAILog.ts >= func.datetime("now", f"-{days} days")).scalar() or 0
+        sum_out = s.query(func.sum(GenAILog.output_tokens)).filter(GenAILog.ts >= func.datetime("now", f"-{days} days")).scalar() or 0
 
-    canon = []
-    if _maybe(data.get("sample_type")):
-        canon.append(_clip(f"{data['sample_type']} Sample", 26))
-    if _maybe(data.get("status")):
-        canon.append(_clip(data["status"], 26))
-    if _maybe(data.get("category")):
-        canon.append(_clip(data["category"], 26))
-    if _maybe(data.get("tracking_number")):
-        canon.append(_clip(f"Track: {data['tracking_number'][-6:]}", 26))
+        by_model = (
+            s.query(GenAILog.model, func.count(GenAILog.id))
+             .filter(GenAILog.ts >= func.datetime("now", f"-{days} days"))
+             .group_by(GenAILog.model)
+             .all()
+        )
 
-    # Always show up to 4 in this fixed order
-    plan["bullets"] = canon[:4]
-
-
-    handling = plan.get("handling") or []
-    if not isinstance(handling, list):
-        handling = [str(handling)]
-    if not handling:
-        # simplest default; you can infer from category later (e.g., liquids → “Keep upright”)
-        handling = ["Keep dry"]
-    plan["handling"] = [ _clip(h, 18) for h in handling[:3] ]
-
-    hazards = plan.get("hazards") or []
-    if not isinstance(hazards, list):
-        hazards = [str(hazards)]
-    plan["hazards"] = [ _clip(h, 14) for h in hazards[:3] ]
-
-    # QR payload fallbacks
-    qp = plan.get("qr_payload", {}) or {}
-    qp.setdefault("product_title", data.get("product_title"))
-    qp.setdefault("company",        data.get("company"))
-    qp.setdefault("category",       data.get("category"))
-    qp.setdefault("tracking_number",data.get("tracking_number"))
-    qp.setdefault("eta",            data.get("eta"))
-    qp.setdefault("contact",        data.get("contact_person"))
-    plan["qr_payload"] = qp
-
-    # Footer/short code + embed if LLM didn’t provide
-    code = _short_code(data)
-    if not plan.get("footer_code"):
-        plan["footer_code"] = code
-
-    # Compose ZPL
-    zpl = _compose_zpl(plan, code)
-
-    # --- Rich markdown preview (one item per line) ---
-    headline = plan.get("headline") or title
-    subhead  = plan.get("subhead") or []
-    bullets  = plan.get("bullets") or []
-    badges   = (plan.get("handling") or [])[:2] + (plan.get("hazards") or [])[:2]
-    code     = plan.get("footer_code") or _short_code(data)
-
-    # use "  \n" (two spaces + newline) to force line breaks in Markdown
-    br = "  \n"
-
-    lines = [f"**{headline}**"]
-    for sh in subhead:
-        lines.append(sh)
-    for b in bullets:
-        lines.append(f"• {b}")
-    if badges:
-        lines.append("_" + " · ".join(badges) + "_")
-    lines.append(f"`{code}`")
-
-    md_preview = br.join(lines)
-
-
-
-    return jsonify({
-        "ok": True,
-        "plan": plan,
-        "short_code": code,
-        "zpl": zpl,
-        "markdown_preview": md_preview
-    }), 200
-
-
+        return jsonify({
+            "window_days": days,
+            "counts": {"total": total, "ok": ok, "blocked": blocked, "errors": errors},
+            "latency_ms": {"avg": float(avg_lat)},
+            "tokens": {"input": int(sum_in), "output": int(sum_out), "total": int(sum_in + sum_out)},
+            "by_model": [{"model": m, "count": c} for (m, c) in by_model],
+        }), 200

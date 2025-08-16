@@ -7,6 +7,14 @@ import pandas as pd
 import numpy as np
 from fpdf import FPDF  # <-- ADDED: We will use this for the PDF download button
 
+GENAI_AGG_URL_DEFAULT = "http://127.0.0.1:5000/api/metrics/genai"
+
+def _fetch_genai_agg(days: int = 7):
+    url = os.getenv("GENAI_AGG_URL", GENAI_AGG_URL_DEFAULT)
+    r = requests.get(url, params={"days": days}, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
 def render_label_card(plan: dict, code: str):
     import re
 
@@ -78,11 +86,12 @@ def render_entries_page():
     View Entries page with 'Add Sample' drawer at the TOP,
     then dynamic dropdown filters (Status, Category) and the table.
     """
+    import io, zipfile  # local imports used for bundling files
     from app.ui.ui_sample_form import render_sample_form
 
     st.header("📚 View Entries")
 
-    # UI state
+    # ---------- UI state ----------
     if "show_add_form" not in st.session_state:
         st.session_state.show_add_form = False
 
@@ -110,12 +119,10 @@ def render_entries_page():
         render_sample_form()  # sets redirect_to_entries=True after successful save
         st.divider()
 
-    # ---------- BELOW: Fetch (ensure we have data to build dropdowns) ----------
-    # If no cache yet, or after page load, fetch initial set to build filter choices.
+    # ---------- Fetch (ensure we have data to build dropdowns) ----------
     if "cached_entries" not in st.session_state:
         st.session_state.cached_entries = _fetch_entries(limit=100)
 
-    # Build dynamic dropdown choices from cached rows
     base_rows = st.session_state.cached_entries or []
     categories = sorted({str(r.get("category", "")).strip() for r in base_rows if r.get("category")})
     statuses   = sorted({str(r.get("status", "")).strip()   for r in base_rows if r.get("status")})
@@ -136,7 +143,6 @@ def render_entries_page():
         st.write("")  # spacing
         refresh = st.button("🔄 Refresh", use_container_width=True)
 
-    # Re-fetch if user clicked refresh or changed the limit (optional: tie to refresh only)
     if refresh:
         st.session_state.cached_entries = _fetch_entries(limit=limit)
         base_rows = st.session_state.cached_entries or []
@@ -149,29 +155,25 @@ def render_entries_page():
         rows = [r for r in rows if str(r.get("status", "")).strip() == sel_status]
 
     # ---------- Unified table ----------
-
     if rows:
         st.write(f"Showing {len(rows)} row(s).")
 
-        # Build DF from filtered rows
         df_orig = pd.DataFrame(rows)
-
-        # Rename category -> type if exists
+        # Rename category -> type if exists (so table column is "type")
         if "category" in df_orig.columns:
             df_orig = df_orig.rename(columns={"category": "type"})
-
         # Ensure id exists
         if "id" not in df_orig.columns:
             df_orig.insert(0, "id", range(1, len(df_orig) + 1))
 
-        # Add checkbox columns
+        # Add action checkboxes if missing
         df = df_orig.copy()
         if "_delete" not in df.columns:
             df["_delete"] = False
         if "_tag" not in df.columns:
             df["_tag"] = False
 
-        # Lock id + action cols
+        # Which columns can the user edit
         not_editable = {"id"}
         editable_cols = [c for c in df.columns if c not in not_editable]
 
@@ -186,19 +188,16 @@ def render_entries_page():
                 required=False,
                 width="medium",
             )
-
         # status dropdown
         if "status" in df.columns:
             col_cfg["status"] = st.column_config.SelectboxColumn(
                 "status",
-                options=["Received", "Sent", "In transit"],
+                options=["Received", "Sent", "In transit", "Pending"],
                 required=False,
                 width="medium",
             )
-
         # type dropdown (renamed category)
         if "type" in df.columns:
-            # Use distinct values in data + example default if empty
             type_opts = sorted({t for t in df["type"].dropna().unique() if t}) or ["uncategorized"]
             col_cfg["type"] = st.column_config.SelectboxColumn(
                 "type",
@@ -209,10 +208,10 @@ def render_entries_page():
 
         # Action checkboxes
         col_cfg["_delete"] = st.column_config.CheckboxColumn("delete", help="Mark for deletion", width="small")
-        col_cfg["_tag"] = st.column_config.CheckboxColumn("tag", help="Mark for tag generation", width="small")
-        # Label language selector (shown always)
-        lang = st.selectbox("Label language", ["en", "ms", "zh"], index=0, key="tag_lang_select")
+        col_cfg["_tag"]    = st.column_config.CheckboxColumn("tag", help="Mark for tag generation", width="small")
 
+        # Label language selector (shared for generate)
+        lang = st.selectbox("Label language", ["en", "ms", "zh"], index=0, key="tag_lang_select")
 
         # Action bar
         ab1, ab2, ab3, _sp = st.columns([1.2, 1.2, 1.6, 3])
@@ -221,8 +220,7 @@ def render_entries_page():
         with ab2:
             delete_selected = st.button("🗑 Delete selected", use_container_width=True)
         with ab3:
-            btn_generate_tags = st.button("🏷 Generate tags", use_container_width=True)  
-
+            btn_generate_tags = st.button("🏷 Generate tags", use_container_width=True)
 
         # Editable table
         edited = st.data_editor(
@@ -230,7 +228,7 @@ def render_entries_page():
             hide_index=True,
             use_container_width=True,
             column_config=col_cfg,
-            disabled=["id"],  # keep checkboxes interactive
+            disabled=["id"],  # id is read-only; checkboxes remain editable
             key="entries_editor",
         )
 
@@ -256,6 +254,7 @@ def render_entries_page():
                             newv = newv.isoformat()
                         if hasattr(oldv, "isoformat"):
                             oldv = oldv.isoformat()
+                        # consider NaNs equal
                         if not ((pd.isna(newv) and pd.isna(oldv)) or newv == oldv):
                             diffs[c] = newv
                     if diffs:
@@ -284,7 +283,7 @@ def render_entries_page():
         # ==== Delete ====
         if delete_selected:
             try:
-                to_delete = edited.loc[edited["_delete"] == True, "id"].tolist()
+                to_delete = edited.loc[edited["_delete"] == True, "id"].tolist()  # noqa: E712
                 if not to_delete:
                     st.info("No rows marked for deletion.")
                 else:
@@ -312,10 +311,6 @@ def render_entries_page():
                 "http://127.0.0.1:5000/api/generate_smart_tag"
             )
 
-            # Small control for language (feel free to move this above the table)
-            #lang = st.selectbox("Label language", ["en", "ms", "zh"], index=0, key="tag_lang_select")
-
-            # rows marked for tag
             ids_for_tag = edited.loc[edited["_tag"] == True, "id"].tolist()  # noqa: E712
             if not ids_for_tag:
                 st.info("No rows marked for tag generation.")
@@ -344,6 +339,8 @@ def render_entries_page():
                 results = []
                 total = len(ids_for_tag)
 
+                bundle = []  # for zip/pdf collection
+
                 for i, rid in enumerate(ids_for_tag, start=1):
                     row_series = edited_by_id[int(rid)]
                     payload = _row_to_payload(row_series)
@@ -352,7 +349,16 @@ def render_entries_page():
                     try:
                         resp = requests.post(GEN_SMART_TAG_URL, json=payload, timeout=45)
                         if resp.status_code == 200:
-                            results.append((rid, True, resp.json()))
+                            data = resp.json()
+                            results.append((rid, True, data))
+                            # collect file bytes for bundling
+                            zpl = (data.get("zpl") or "").strip()
+                            plain = (data.get("label_text") or "").strip()
+                            md_preview = (data.get("markdown_preview") or "").strip()
+                            code = data.get("short_code", f"tag_{rid}")
+                            file_bytes = (zpl + "\n").encode("utf-8") if zpl else ((plain or md_preview) + "\n").encode("utf-8")
+                            ext = "zpl" if zpl else "txt"
+                            bundle.append((f"{code}.{ext}", file_bytes))
                         else:
                             results.append((rid, False, f"HTTP {resp.status_code}: {resp.text}"))
                     except requests.RequestException as e:
@@ -363,23 +369,18 @@ def render_entries_page():
                 st.divider()
                 st.subheader("🔖 Tag Previews")
 
-                # For optional bulk ZIP
-                bundle = []
-
                 any_ok = False
                 for rid, ok, data in results:
                     with st.expander(f"Row ID {rid} — {'✅ OK' if ok else '❌ Failed'}", expanded=not ok):
                         if ok:
-                            # Back-end fields (smart tag route)
-                            md_preview = (data.get("markdown_preview")
-                                        or data.get("label_markdown")
-                                        or "*No preview returned*").strip()
+                            plan = data.get("plan") or {}
+                            code = data.get("short_code", f"tag_{rid}")
+                            render_label_card(plan, code)
+
+                            # Also offer individual downloads again for convenience
                             zpl = (data.get("zpl") or "").strip()
                             plain = (data.get("label_text") or "").strip()
-                            code = data.get("short_code", f"tag_{rid}")
-
-                            plan = data.get("plan") or {}
-                            render_label_card(plan, code)
+                            md_preview = (data.get("markdown_preview") or "").strip()
 
                             cdl1, cdl2 = st.columns(2)
                             with cdl1:
@@ -399,44 +400,28 @@ def render_entries_page():
                                     mime="text/plain",
                                     use_container_width=True,
                                 )
-
-                            # collect for zip if ZPL present; fall back to txt
-                            file_bytes = (zpl + "\n").encode("utf-8") if zpl else (plain + "\n").encode("utf-8")
-                            ext = "zpl" if zpl else "txt"
-                            bundle.append((f"{code}.{ext}", file_bytes))
                             any_ok = True
                         else:
                             st.error(str(data))
 
-                # =========================
-                # ADDED: PDF download button
-                # =========================
+                # ---- Bulk download buttons (ZIP + PDF) ----
                 if any_ok and bundle:
+                    # Build ZIP now (zip_buf exists here)
+                    zip_buf = io.BytesIO()
+                    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                        for fname, fbytes in bundle:
+                            zf.writestr(fname, fbytes)
+                    zip_buf.seek(0)
+
                     cz1, cz2 = st.columns([1, 1])
                     with cz1:
-                        try:
-                            st.download_button(
-                                label="📦 Download ALL tags (.zip)",
-                                data=zip_buf.getvalue(),
-                                file_name="tags_bundle.zip",
-                                mime="application/zip",
-                                use_container_width=True,
-                            )
-                        except Exception:
-                            # If zip_buf isn't available for some reason, rebuild quickly
-                            import io, zipfile
-                            _zip_buf2 = io.BytesIO()
-                            with zipfile.ZipFile(_zip_buf2, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                                for fname, fbytes in bundle:
-                                    zf.writestr(fname, fbytes)
-                            _zip_buf2.seek(0)
-                            st.download_button(
-                                label="📦 Download ALL tags (.zip)",
-                                data=_zip_buf2,
-                                file_name="tags_bundle.zip",
-                                mime="application/zip",
-                                use_container_width=True,
-                            )
+                        st.download_button(
+                            label="📦 Download ALL tags (.zip)",
+                            data=zip_buf.getvalue(),
+                            file_name="tags_bundle.zip",
+                            mime="application/zip",
+                            use_container_width=True,
+                        )
 
                     with cz2:
                         # Build a single PDF containing all tag contents (one page per tag)
@@ -445,7 +430,6 @@ def render_entries_page():
                             pdf.set_auto_page_break(auto=True, margin=15)
 
                             def _latin1_safe(s: str) -> str:
-                                # Ensure content is safe for FPDF (latin-1)
                                 return s.encode("latin-1", "replace").decode("latin-1")
 
                             for fname, fbytes in bundle:
@@ -487,5 +471,62 @@ def render_entries_page():
                         except Exception as e:
                             st.error(f"Failed to build PDF: {e}")
 
+                st.divider()
+
     else:
         st.info("No entries found with current filters.")
+
+    # ================================
+    # 🤖 GenAI Metrics (on-demand)
+    # ================================
+    st.markdown("### 🤖 GenAI Metrics")
+    g1, g2, _g3 = st.columns([1, 1, 3])
+    with g1:
+        days = st.number_input("Window (days)", min_value=1, max_value=90, value=7, step=1)
+    with g2:
+        show = st.button("Show metrics", type="primary", use_container_width=True)
+
+    if show:
+        try:
+            agg = _fetch_genai_agg(days=days)
+        except Exception as e:
+            st.error(f"Failed to fetch GenAI metrics: {e}")
+        else:
+            # KPIs
+            k1, k2, k3, k4 = st.columns(4)
+            total   = agg["counts"]["total"]
+            ok      = agg["counts"]["ok"]
+            blocked = agg["counts"]["blocked"]
+            errors  = agg["counts"]["errors"]
+            with k1: st.metric("Requests", total)
+            with k2: st.metric("Success rate", f"{(ok/max(1,total))*100:.1f}%")
+            with k3: st.metric("Blocked", blocked)
+            with k4: st.metric("Errors", errors)
+
+            l1, l2 = st.columns(2)
+            with l1: st.metric("Avg latency (ms)", f"{agg['latency_ms']['avg']:.0f}")
+            with l2:
+                p95 = agg["latency_ms"].get("p95")
+                st.metric("p95 latency (ms)", f"{p95:.0f}" if p95 else "N/A")
+
+            t1, t2, t3 = st.columns(3)
+            with t1: st.metric("Input tokens",  agg["tokens"]["input"])
+            with t2: st.metric("Output tokens", agg["tokens"]["output"])
+            with t3: st.metric("Total tokens",  agg["tokens"]["total"])
+
+            # By model (if multiple)
+            by_model = agg.get("by_model", [])
+            if by_model:
+                st.markdown("**Requests by model**")
+                st.dataframe(pd.DataFrame(by_model), use_container_width=True, hide_index=True)
+
+            st.markdown("**Interpretation tips**")
+            st.caption("- Rising **blocked** suggests inputs trigger safety → tighten prompts/inputs.")
+            st.caption("- High **p95 latency** hurts UX → shorter prompts or a smaller model.")
+            st.caption("- **Token totals** drive cost → watch verbose outputs.")
+    else:
+        st.info("Click **Show metrics** to compute usage, latency, success/blocks and token totals.")
+
+
+
+    
