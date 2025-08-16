@@ -1,8 +1,11 @@
 # app/models.py
-from sqlalchemy import Column, Integer, String, Float, Text, DateTime, Boolean, ForeignKey
+from sqlalchemy import (
+    Column, Integer, String, Float, Text, DateTime, Boolean, ForeignKey
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from app.db import Base  # this should be your shared SQLAlchemy Base
+from app.db import Base  # shared SQLAlchemy Base
+
 
 class Entry(Base):
     __tablename__ = "entries"
@@ -16,6 +19,7 @@ class Entry(Base):
     status = Column(String(50), nullable=False)
     courier_cost = Column(Float, default=0.0)
     eta = Column(String(20))  # ISO date string
+
 
 class ImageRankBatch(Base):
     __tablename__ = "image_rank_batches"
@@ -40,7 +44,7 @@ class ImageRankBatch(Base):
         order_by="ImageRankItem.rank.asc()",
     )
 
-# ---- Image Ranker: items in a batch ----
+
 class ImageRankItem(Base):
     __tablename__ = "image_rank_items"
 
@@ -59,7 +63,7 @@ class ImageRankItem(Base):
 
     batch = relationship("ImageRankBatch", back_populates="items")
 
-# ---- NEW: Alt text saved for a batch’s best image ----
+
 class ImageAltText(Base):
     __tablename__ = "image_alt_texts"
 
@@ -75,6 +79,8 @@ class ImageAltText(Base):
     model    = Column(String(100), default="gemini-1.5-flash")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+
+# ---- Storage Predictor: saved predictions ----
 class Prediction(Base):
     __tablename__ = "predictions"
     id = Column(Integer, primary_key=True)
@@ -93,14 +99,50 @@ class Prediction(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # backref from Feedback
+    feedback = relationship(
+        "Feedback",
+        back_populates="prediction",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+# ---- Storage Predictor: finalized items live here ----
+class MainStorageItem(Base):
+    __tablename__ = "main_storage"
+    id = Column(Integer, primary_key=True)
+    product_type = Column(String(64), nullable=False)
+    description = Column(Text, nullable=False)
+    weight_g = Column(Float, nullable=False)
+    storage_bin = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class Feedback(Base):
     __tablename__ = "feedback"
     id = Column(Integer, primary_key=True)
-    prediction_id = Column(Integer, nullable=False)
-    correct_product_type = Column(String(64))     # optional corrected label
-    correct_storage_bin = Column(String(64))      # optional corrected bin
-    notes = Column(Text)                          # optional free text
+
+    # Link to the original prediction
+    prediction_id = Column(
+        Integer,
+        ForeignKey("predictions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # NEW: store the Yes/No answer explicitly
+    is_correct = Column(Boolean, nullable=False, default=True)
+
+    # Optional corrections when the answer is "No"
+    correct_product_type = Column(String(64))
+    correct_storage_bin = Column(String(64))
+
+    notes = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    prediction = relationship("Prediction", back_populates="feedback")
+
 
 # ---- Disposal Predictor: saved predictions ----
 class DisposalPrediction(Base):
@@ -115,6 +157,7 @@ class DisposalPrediction(Base):
     candidates_json = Column(Text)           # e.g. '[["aerosol_cans",0.91],["... ",0.07]]'
     guidance  = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
 
 class GenAILog(Base):
     __tablename__ = "genai_logs"
