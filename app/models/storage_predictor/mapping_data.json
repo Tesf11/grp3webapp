@@ -1,10 +1,10 @@
 {
     "category_to_product_type": {
-        "Staples": "Dry Food",
-        "Snacks & Branded Foods": "Dry Food",
-        "Fruits & Vegetables": "Fresh Food",
-        "Premium Fruits": "Fresh Food",
-        "Dairy & Bakery": "Fresh Food",
+        "Staples": "Tool",
+        "Snacks & Branded Foods": "Dry Product",
+        "Fruits & Vegetables": "Fresh Product",
+        "Premium Fruits": "Fresh Product",
+        "Dairy & Bakery": "Fresh Product",
         "Beverages": "Liquid",
         "Personal Care": "Toiletries",
         "Skin Care": "Toiletries",
@@ -55,8 +55,8 @@
         "Stationery": "Office"
     },
     "product_type_to_bin": {
-        "Fresh Food": "Bin 1 (Bulk & Perishables)",
-        "Dry Food": "Bin 1 (Bulk & Perishables)",
+        "Dry Product": "Bin 1 (Bulk & Perishables)",
+        "Fresh Product": "Bin 1 (Bulk & Perishables)",
         "Appliance": "Bin 2 (Durables & Utilities)",
         "Utensil": "Bin 2 (Durables & Utilities)",
         "Furniture": "Bin 2 (Durables & Utilities)",
@@ -64,6 +64,7 @@
         "Textile": "Bin 2 (Durables & Utilities)",
         "Decor": "Bin 2 (Durables & Utilities)",
         "Toy": "Bin 2 (Durables & Utilities)",
+        "Household Supply": "Bin 2 (Durables & Utilities)",
         "Liquid": "Bin 3 (Sensitive & Spill-Risk)",
         "Toiletries": "Bin 3 (Sensitive & Spill-Risk)",
         "Cosmetic": "Bin 3 (Sensitive & Spill-Risk)",

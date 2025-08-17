@@ -7,6 +7,7 @@ from typing import Optional
 from app.db import get_session, create_all
 from app.models import Prediction, Feedback, MainStorageItem  # ← use shared models
 
+# --- put near the top of app/ui/ui_model1.py (after imports) ---
 from sqlalchemy import text
 
 def _ensure_feedback_is_correct_column():
@@ -447,7 +448,7 @@ This model predicts the **product type** and assigns the proper **storage bin** 
                 corrected_type = st.text_input(
                     "Correct product type (optional)",
                     key=f"fb_type_{model_name}",
-                    placeholder="e.g., Toiletries / Electronics / Dry Food ..."
+                    placeholder="e.g., Toiletries / Electronics / Dry Products ..."
                 )
                 notes = st.text_area(
                     "Notes (optional)",

@@ -142,8 +142,6 @@ This UI supports:
 - **Hugging Face** folder models
 - Dedicated tabs for **Storage Predictor**, **Disposal Predictor**, **Image Ranker**, and **Product Category**.
 """)
-    if not models_info:
-        st.info("No models detected yet. Place your files under `app/models/`.")
 
 # -----------------------------
 # Auto-detected model tabs

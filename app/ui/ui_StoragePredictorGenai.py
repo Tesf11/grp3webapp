@@ -13,9 +13,9 @@ from fpdf import FPDF
 # ------------------------------
 # Core GenAI logic
 # ------------------------------
-MODEL_NAME_DEFAULT = os.getenv("GEN_MODEL_NAME", "gemini-2.5-flash")  # or "gemini-2.5-pro"
-FIXED_TEMPERATURE = 0.7  # fixed creativity (no UI control)
-MAX_ITEMS = 5            # cap list lengths
+MODEL_NAME_DEFAULT = os.getenv("GEN_MODEL_NAME", "gemini-2.5-flash")
+FIXED_TEMPERATURE = 0.7
+MAX_ITEMS = 5
 
 SYSTEM_RULES = (
     "You are a product ideation assistant for ANS Import & Export (cleaning & home-care focus).\n"
@@ -91,7 +91,6 @@ def generate_ideas(
 
             if extra_tags:
                 tags = [t.strip() for t in extra_tags if t and t.strip()]
-                # dedupe while preserving order
                 features = list(dict.fromkeys(features + tags))
 
             return {
@@ -142,6 +141,66 @@ def _call_backend_or_local(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ------------------------------
+# Lightweight metrics (Usefulness % & Relevance %)
+# ------------------------------
+_CLEANING_TERMS = [
+    "clean", "cleaner", "cleaning", "disinfect", "disinfectant", "sanitize", "sanitizer",
+    "bleach", "hypochlorite", "quat", "alcohol", "antibacterial", "antimicrobial",
+    "degreaser", "detergent", "soap", "surfactant", "rinse", "streak-free", "residue-free",
+    "fragrance-free", "odor", "deodorize", "mold", "mildew", "floor", "tile", "glass",
+    "steel", "toilet", "bathroom", "kitchen", "laundry", "mop", "brush", "scrub",
+    "pest", "repellent", "moth", "naphthalene", "camphor"
+]
+_USEFULNESS_HINTS = [
+    "how to use", "dilution", "ratio", "rinse", "contact time", "safety",
+    "non-toxic", "pet-safe", "skin-safe", "ppe", "store", "ventilation",
+    "residue-free", "streak-free", "works on", "use on", "removes", "kills",
+    "degreases", "deodorizes", "ph", "compatible", "material", "surface"
+]
+
+def _pct(numer: int, denom: int) -> int:
+    if denom <= 0: return 0
+    return int(round(100.0 * numer / denom))
+
+def _score_relevance(possible_products: List[str]) -> int:
+    if not possible_products:
+        return 0
+    hits = 0
+    for p in possible_products:
+        t = str(p).lower()
+        if any(term in t for term in _CLEANING_TERMS):
+            hits += 1
+    return _pct(hits, len(possible_products))
+
+def _score_usefulness(features: List[str]) -> int:
+    if not features:
+        return 0
+    hits = 0
+    for f in features:
+        t = str(f).lower()
+        if any(h in t for h in _USEFULNESS_HINTS):
+            hits += 1
+    return _pct(hits, len(features))
+
+def _render_side_metrics(ideas: Dict[str, Any]):
+    prods = ideas.get("possible_products") or []
+    feats = ideas.get("features") or []
+    rel = _score_relevance(prods)
+    use = _score_usefulness(feats)
+
+    left, right = st.columns([3, 1], vertical_alignment="top")
+    with right:
+        st.markdown(
+            f"<div style='color: #6b7280; font-size: 0.85rem; text-align:right'>"
+            f"<div><em>Relevance</em>: {rel}%</div>"
+            f"<div><em>Usefulness</em>: {use}%</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    return rel, use
+
+
+# ------------------------------
 # Presentation helpers
 # ------------------------------
 def _one_liner(ideas: Dict[str, Any]) -> str:
@@ -161,6 +220,9 @@ def _render_generated_ideas(ideas: Dict[str, Any], max_items: int = MAX_ITEMS):
     """
     tab, = st.tabs(["🧩 Generated Product Ideas"])
     with tab:
+        # side metrics (small grey text on the right)
+        _render_side_metrics(ideas)
+
         prods = [s for s in (ideas.get("possible_products") or []) if str(s).strip()][:max_items]
         feats = [s for s in (ideas.get("features") or []) if str(s).strip()][:max_items]
 
@@ -168,7 +230,6 @@ def _render_generated_ideas(ideas: Dict[str, Any], max_items: int = MAX_ITEMS):
             st.info("No ideas yet.")
             return
 
-        # Primary: quick pairs
         if prods and feats:
             st.markdown("**Product → Top Feature**")
             n = min(len(prods), len(feats))
@@ -183,7 +244,6 @@ def _render_generated_ideas(ideas: Dict[str, Any], max_items: int = MAX_ITEMS):
             for f in feats:
                 st.markdown(f"- {f}")
 
-        # Secondary: full lists in expanders
         with st.expander("See all possible products"):
             if prods:
                 for i, p in enumerate(prods, 1):
@@ -233,15 +293,13 @@ def render_storage_predictor_genai():
     with cols[2]:
         st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
 
-    # --- Session state for single-result view ---
     if "sp_run" not in st.session_state:
-        st.session_state.sp_run = 0              # increments every submit
+        st.session_state.sp_run = 0
     if "sp_last_result" not in st.session_state:
-        st.session_state.sp_last_result = None   # latest ideas dict
+        st.session_state.sp_last_result = None
     if "sp_last_summary" not in st.session_state:
-        st.session_state.sp_last_summary = ""    # latest one-liner
+        st.session_state.sp_last_summary = ""
 
-    # Render the latest result (if any)
     if st.session_state.sp_last_result:
         ideas = st.session_state.sp_last_result
         ol = st.session_state.sp_last_summary
@@ -250,12 +308,10 @@ def render_storage_predictor_genai():
 
         _render_generated_ideas(ideas, MAX_ITEMS)
 
-        # Downloads with unique keys for this run
         colA, colB = st.columns(2)
         with colA:
             ()
         with colB:
-            # Build PDF via FPDF (lightweight)
             pdf = FPDF()
             pdf.add_page()
 
@@ -286,10 +342,8 @@ def render_storage_predictor_genai():
                 key=f"dl_pdf_{st.session_state.sp_run}",
             )
 
-    # Chat input (new prompt)
     user_text = st.chat_input("Describe the cleaning sample (e.g., 'solid moth balls', 'citrus degreaser concentrate').")
     if user_text:
-        # Clear previous result so there are no duplicate buttons
         st.session_state.sp_run += 1
         st.session_state.sp_last_result = None
         st.session_state.sp_last_summary = ""
@@ -297,7 +351,7 @@ def render_storage_predictor_genai():
         tags_list = [t.strip() for t in (extra_tags_text or "").split(",") if t.strip()]
         payload = {
             "description": user_text.strip(),
-            "tags": tags_list,  # Extra tags ARE used
+            "tags": tags_list,
             "temperature": FIXED_TEMPERATURE,
             "model_name": os.getenv("GEN_MODEL_NAME", MODEL_NAME_DEFAULT),
         }
@@ -308,17 +362,14 @@ def render_storage_predictor_genai():
             with st.spinner("Generating ideas…"):
                 ideas = _call_backend_or_local(payload)
 
-                # Cache latest result + summary
                 ol = _one_liner(ideas)
                 st.session_state.sp_last_result = ideas
                 st.session_state.sp_last_summary = ol or "Ideas"
 
-                # Render immediately for this turn
                 if ol:
                     st.markdown(f"**Summary:** {ol}")
                 _render_generated_ideas(ideas, MAX_ITEMS)
 
-                # Downloads with keys tied to current run
                 colA, colB = st.columns(2)
                 with colA:
                     ()
