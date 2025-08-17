@@ -1,4 +1,4 @@
-# app/ui/ui_image_ranker.py
+# app/ui/ui_image_ranker.py - Isaac
 from __future__ import annotations
 from pathlib import Path
 import io, os, json, base64

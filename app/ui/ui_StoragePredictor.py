@@ -1,4 +1,4 @@
-# app/ui/ui_model1.py
+# app/ui/ui_StoragePredictor.py - Tesfay
 import streamlit as st
 import pandas as pd
 from typing import Optional
@@ -7,7 +7,6 @@ from typing import Optional
 from app.db import get_session, create_all
 from app.models import Prediction, Feedback, MainStorageItem  # ← use shared models
 
-# --- put near the top of app/ui/ui_model1.py (after imports) ---
 from sqlalchemy import text
 
 def _ensure_feedback_is_correct_column():
