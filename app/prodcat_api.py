@@ -1,4 +1,5 @@
 # app/prodcat_api.py
+# Done by Chng Jialong
 from flask import Blueprint, request, jsonify, current_app
 from app.hf_loader import HFAdapter
 import os
@@ -17,27 +18,41 @@ from sqlalchemy import func
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# Optional switch via env; defaults to ON if you have an API key
+USE_GENAI = str(os.getenv("USE_GENAI", "1")).lower() not in ("0", "false", "", "no") and bool(GEMINI_API_KEY)
+
+# Configure model
+gemini_model = None
+GENAI_MODEL_NAME = "disabled"
+
 # Configure Gemini model
-genai.configure(api_key=GEMINI_API_KEY)
-def pick_gemini_model():
-    preferred = ["gemini-1.5-flash", "gemini-2.5-flash"]
-    gen_cfg = {"response_mime_type": "application/json"}  # nudge to return raw JSON
-    available = list(genai.list_models())
-    can_generate = {m.name for m in available if "generateContent" in getattr(m, "supported_generation_methods", [])}
+if USE_GENAI:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        def pick_gemini_model():
+            preferred = ["gemini-1.5-flash", "gemini-2.5-flash"]
+            gen_cfg = {"response_mime_type": "application/json"}
+            available = list(genai.list_models())
+            can_generate = {
+                m.name for m in available
+                if "generateContent" in getattr(m, "supported_generation_methods", [])
+            }
+            for name in preferred:
+                if name in can_generate:
+                    print(f"[Gemini] Using model: {name}")
+                    return genai.GenerativeModel(name, generation_config=gen_cfg), name
+            if can_generate:
+                name = sorted(can_generate)[0]
+                print(f"[Gemini] Using fallback model: {name}")
+                return genai.GenerativeModel(name, generation_config=gen_cfg), name
+            raise RuntimeError("No Gemini models available for this API key.")
 
-    for name in preferred:
-        if name in can_generate:
-            print(f"[Gemini] Using model: {name}")
-            return genai.GenerativeModel(name, generation_config=gen_cfg)
+        gemini_model, GENAI_MODEL_NAME = pick_gemini_model()
+    except Exception as e:
+        print(f"[GenAI disabled] {e}")
+        gemini_model = None
+        GENAI_MODEL_NAME = "disabled"
 
-    if can_generate:
-        name = sorted(can_generate)[0]
-        print(f"[Gemini] Using fallback model: {name}")
-        return genai.GenerativeModel(name, generation_config=gen_cfg)
-
-    raise RuntimeError("No Gemini models with generateContent available for this API key.")
-
-gemini_model = pick_gemini_model()
 
 prodcat_api = Blueprint("prodcat_api", __name__)
 
@@ -141,7 +156,7 @@ def api_update_entry(row_id: int):
 
         for k, v in updates.items():
             setattr(obj, k, v)
-        s.add(obj)           # optional; flushed on context exit
+        s.add(obj)          
         s.flush()            # ensure obj has latest values
 
         return jsonify({"ok": True, "id": obj.id, "row": _serialize(obj)}), 200
@@ -293,8 +308,9 @@ def _compose_zpl(plan: dict, code: str, wide: bool = False):
 
 @prodcat_api.post("/api/generate_smart_tag")
 def api_generate_smart_tag():
-    if not USE_GENAI or gemini_model is None:
+    if gemini_model is None:
         return jsonify({"error": "GenAI not configured"}), 503
+
 
     data = request.get_json(force=True, silent=True) or {}
     if "type" in data and "category" not in data:
