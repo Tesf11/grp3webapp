@@ -234,84 +234,84 @@ def render_entries_page():
 
         # ==== Save edits ====
         
-    if save_changes:
-        try:
-            ACTION_COLS = {"_delete", "_tag"}
-            READONLY_COLS = {"id"}
+        if save_changes:
+            try:
+                ACTION_COLS = {"_delete", "_tag"}
+                READONLY_COLS = {"id"}
 
-            # Only compare real, editable DB fields
-            editable_cols = [c for c in df.columns if c not in (READONLY_COLS | ACTION_COLS)]
+                # Only compare real, editable DB fields
+                editable_cols = [c for c in df.columns if c not in (READONLY_COLS | ACTION_COLS)]
 
-            # Columns to pull from the edited grid
-            cmp_cols_left = ["id"] + editable_cols
+                # Columns to pull from the edited grid
+                cmp_cols_left = ["id"] + editable_cols
 
-            # Columns to pull from the original (it doesn't have action cols)
-            cmp_cols_right = ["id"] + [c for c in editable_cols if c in df_orig.columns]
+                # Columns to pull from the original (it doesn't have action cols)
+                cmp_cols_right = ["id"] + [c for c in editable_cols if c in df_orig.columns]
 
-            left = edited[cmp_cols_left].copy()
-            right = df_orig[cmp_cols_right].copy()
+                left = edited[cmp_cols_left].copy()
+                right = df_orig[cmp_cols_right].copy()
 
-            # Suffix right-hand columns so we can compare col-by-col
-            # Keep 'id' unsuffixed to merge on it.
-            right.columns = [
-                (c if c == "id" else f"{c}_old") for c in right.columns
-            ]
+                # Suffix right-hand columns so we can compare col-by-col
+                # Keep 'id' unsuffixed to merge on it.
+                right.columns = [
+                    (c if c == "id" else f"{c}_old") for c in right.columns
+                ]
 
-            # Merge on id
-            left = left.merge(right, on="id", how="left")
+                # Merge on id
+                left = left.merge(right, on="id", how="left")
 
-            changed_rows = []
-            for _, row in left.iterrows():
-                rid = int(row["id"])
-                diffs = {}
+                changed_rows = []
+                for _, row in left.iterrows():
+                    rid = int(row["id"])
+                    diffs = {}
 
-                for c in editable_cols:
-                    newv = row.get(c)
-                    oldv = row.get(f"{c}_old")
+                    for c in editable_cols:
+                        newv = row.get(c)
+                        oldv = row.get(f"{c}_old")
 
-                    # Normalize numpy scalars
-                    if hasattr(newv, "item"): newv = newv.item()
-                    if hasattr(oldv, "item"): oldv = oldv.item()
+                        # Normalize numpy scalars
+                        if hasattr(newv, "item"): newv = newv.item()
+                        if hasattr(oldv, "item"): oldv = oldv.item()
 
-                    # Normalize dates
-                    if hasattr(newv, "isoformat"): newv = newv.isoformat()
-                    if hasattr(oldv, "isoformat"): oldv = oldv.isoformat()
+                        # Normalize dates
+                        if hasattr(newv, "isoformat"): newv = newv.isoformat()
+                        if hasattr(oldv, "isoformat"): oldv = oldv.isoformat()
 
-                    # Treat NaN == NaN
-                    same = (
-                        (pd.isna(newv) and pd.isna(oldv)) or
-                        (newv == oldv)
-                    )
-                    if not same:
-                        diffs[c] = newv
+                        # Treat NaN == NaN
+                        same = (
+                            (pd.isna(newv) and pd.isna(oldv)) or
+                            (newv == oldv)
+                        )
+                        if not same:
+                            diffs[c] = newv
 
-                if diffs:
-                    changed_rows.append((rid, diffs))
+                    if diffs:
+                        changed_rows.append((rid, diffs))
 
-            if not changed_rows:
-                st.info("No changes to save.")
-            else:
-                update_url_tmpl = os.getenv("UPDATE_API_URL_TMPL", "http://127.0.0.1:5000/api/update/{}")
-                ok = 0
-                for rid, diffs in changed_rows:
-                    # Optional: map UI alias 'type' -> API 'category' here if your backend didn’t already
-                    # if "type" in diffs and "category" not in diffs:
-                    #     diffs["category"] = diffs.pop("type")
+                if not changed_rows:
+                    st.info("No changes to save.")
+                else:
+                    update_url_tmpl = os.getenv("UPDATE_API_URL_TMPL", "http://127.0.0.1:5000/api/update/{}")
+                    ok = 0
+                    for rid, diffs in changed_rows:
+                        # Optional: map UI alias 'type' -> API 'category' here if your backend didn’t already
+                        # if "type" in diffs and "category" not in diffs:
+                        #     diffs["category"] = diffs.pop("type")
 
-                    try:
-                        resp = requests.put(update_url_tmpl.format(rid), json=diffs, timeout=10)
-                        if resp.status_code == 200:
-                            ok += 1
-                        else:
-                            st.error(f"Update {rid} failed: {resp.text}")
-                    except requests.RequestException as e:
-                        st.error(f"Update {rid} failed: {e}")
+                        try:
+                            resp = requests.put(update_url_tmpl.format(rid), json=diffs, timeout=10)
+                            if resp.status_code == 200:
+                                ok += 1
+                            else:
+                                st.error(f"Update {rid} failed: {resp.text}")
+                        except requests.RequestException as e:
+                            st.error(f"Update {rid} failed: {e}")
 
-                st.success(f"Saved {ok} row(s).")
-                st.session_state.cached_entries = _fetch_entries(limit=limit)
-                st.rerun()
-        except Exception as e:
-            st.error(f"Failed to process changes: {e}")
+                    st.success(f"Saved {ok} row(s).")
+                    st.session_state.cached_entries = _fetch_entries(limit=limit)
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Failed to process changes: {e}")
 
 
         # ==== Delete ====

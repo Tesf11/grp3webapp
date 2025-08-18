@@ -16,9 +16,9 @@ from sqlalchemy import func
 
 
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
-# Optional switch via env; defaults to ON if you have an API key
+#via env; defaults to ON if you have an API key
 USE_GENAI = str(os.getenv("USE_GENAI", "1")).lower() not in ("0", "false", "", "no") and bool(GEMINI_API_KEY)
 
 # Configure model
