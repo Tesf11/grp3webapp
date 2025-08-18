@@ -132,22 +132,34 @@ def api_list_entries():
 # --- UPDATE (partial) ---
 @prodcat_api.put("/api/update/<int:row_id>")
 def api_update_entry(row_id: int):
-    """Partial update. Accepts JSON with any subset of columns.
-       UI may send 'type' for the 'category' DB column; we map it here.
-    """
     payload = request.get_json(force=True, silent=True) or {}
 
-    # Map UI field 'type' -> DB field 'category'
+    # 1) map UI alias
     if "type" in payload and "category" not in payload:
         payload["category"] = payload.pop("type")
 
-    # Whitelist updatable fields from the model
-    # (don’t allow id or server-managed timestamps to be written)
+    # 2) remove Streamlit/editor meta keys & any key starting with "_"
+    meta_keys = {"_delete", "_tag", "_index", "_selected", "_row"}
+    payload = {k: v for k, v in payload.items() if k not in meta_keys and not k.startswith("_")}
+
+    # 3) whitelist real columns
     allowed = {c.name for c in Entry.__table__.columns} - {"id", "created_at"}
     updates = {k: v for k, v in payload.items() if k in allowed}
 
     if not updates:
         return jsonify({"error": "No valid fields to update."}), 400
+
+    # 4) lightweight type coercion
+    if "courier_cost" in updates:
+        try:
+            updates["courier_cost"] = float(updates["courier_cost"]) if updates["courier_cost"] not in ("", None) else None
+        except Exception:
+            return jsonify({"error": "courier_cost must be a number"}), 400
+
+    # Optional: normalize blank strings to None for nullable cols
+    for k, v in list(updates.items()):
+        if isinstance(v, str) and v.strip() == "":
+            updates[k] = None
 
     with get_session() as s:
         obj = s.get(Entry, row_id)
@@ -156,9 +168,8 @@ def api_update_entry(row_id: int):
 
         for k, v in updates.items():
             setattr(obj, k, v)
-        s.add(obj)          
-        s.flush()            # ensure obj has latest values
-
+        s.add(obj)
+        s.flush()  
         return jsonify({"ok": True, "id": obj.id, "row": _serialize(obj)}), 200
 
 
